@@ -45,9 +45,7 @@ def _make_trainer(
     cfg = KivskiConfig()
     # Force a known-small hidden size so we can vary it per test.
     cfg = cfg.model_copy(update={"ml": cfg.ml.model_copy(update={"hidden_size": hidden_size})})
-    cfg = cfg.model_copy(
-        update={"simulation": cfg.simulation.model_copy(update={"team_size": team_size})}
-    )
+    cfg = cfg.model_copy(update={"simulation": cfg.simulation.model_copy(update={"team_size": team_size})})
     action_dims = default_action_dims(team_size)
     joint_obs_dim = infer_joint_obs_dim(obs_dim, team_size)
     model = build_model(

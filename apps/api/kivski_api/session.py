@@ -837,10 +837,7 @@ class TrainingWatchdog:
         # very same size-mismatch error, immediately consume another
         # restart slot, and the cascade we set out to stop would resume.
         # Strip the --resume and let the trainer start fresh instead.
-        incompatible = (
-            crash_reason is not None
-            and crash_reason.get("category") == "incompatible_checkpoint"
-        )
+        incompatible = crash_reason is not None and crash_reason.get("category") == "incompatible_checkpoint"
 
         if incompatible:
             resume_str: str | None = None
@@ -852,9 +849,7 @@ class TrainingWatchdog:
             )
         else:
             resume_target = _find_resumable_checkpoint()
-            resume_str = (
-                str(resume_target) if resume_target is not None else job.resume_from
-            )
+            resume_str = str(resume_target) if resume_target is not None else job.resume_from
 
         new_job_id = uuid.uuid4().hex[:12]
         log_path = _log_dir() / f"train-{new_job_id}.log"

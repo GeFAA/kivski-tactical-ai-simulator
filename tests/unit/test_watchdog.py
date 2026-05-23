@@ -99,9 +99,7 @@ def _patch_routes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resume: Path 
     log_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(training_routes, "_log_dir", lambda: log_dir)
     monkeypatch.setattr(training_routes, "_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        training_routes, "_find_resumable_checkpoint", lambda: resume
-    )
+    monkeypatch.setattr(training_routes, "_find_resumable_checkpoint", lambda: resume)
 
 
 # ---------------------------------------------------------------------------

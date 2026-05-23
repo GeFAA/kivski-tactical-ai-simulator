@@ -211,8 +211,7 @@ def load_blob_with_compat(
         # Lone state dict -- can't validate. Wrap into a dict-shape so
         # callers see a uniform return type.
         _LOG.warning(
-            "checkpoint %s is a bare state_dict (no metadata); "
-            "attempting load anyway",
+            "checkpoint %s is a bare state_dict (no metadata); attempting load anyway",
             path,
         )
         return {"model": blob, "metadata": {}}
