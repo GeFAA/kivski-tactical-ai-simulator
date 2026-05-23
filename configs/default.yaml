@@ -1,0 +1,125 @@
+# Kivski Tactical AI Simulator - default configuration.
+# Override via CLI (--config path/to/other.yaml) or env vars.
+
+seed: 20260523
+
+simulation:
+  map: dustline
+  team_size: 5
+  max_rounds: 24
+  side_switch_round: 12
+  round_time_seconds: 90
+  bomb_timer_seconds: 40
+  plant_time_seconds: 3.0
+  defuse_time_seconds: 5.0
+  defuse_time_with_kit_seconds: 3.0
+  buy_time_seconds: 15
+  tick_rate_hz: 10            # logical sim ticks per second
+  max_ticks_per_round: 900    # safety cap
+  starting_money: 800
+
+economy:
+  reward_round_win: 3250
+  reward_round_loss_base: 1900
+  reward_round_loss_increment: 500
+  reward_round_loss_max: 3400
+  reward_kill_rifle: 300
+  reward_kill_pistol: 300
+  reward_kill_smg: 600
+  reward_kill_sniper: 100
+  reward_bomb_plant: 300
+  reward_bomb_defuse: 250
+  reward_bomb_detonate: 150
+
+combat:
+  base_accuracy_standing: 0.78
+  base_accuracy_moving: 0.32
+  base_accuracy_crouched: 0.92
+  reaction_time_min_ticks: 1
+  reaction_time_max_ticks: 5
+  los_check_step: 0.5
+  cover_damage_multiplier: 0.55
+
+agent:
+  observation:
+    teammate_slots: 4
+    last_known_enemies: 5
+    sound_event_slots: 6
+    received_message_slots: 5
+    history_length: 4
+  action:
+    move_intents: 8           # 8 cardinal/diagonal compass directions
+    micro_actions: 6          # hold, peek, crouch, sprint, fall_back, plant_or_defuse
+    comm_actions: 9           # 8 callouts + no-comm
+    buy_options: 8            # rifle/smg/sniper/pistol_upgrade/armor/utility_grenade/utility_smoke/no_buy
+
+ml:
+  algo: mappo
+  hidden_size: 256
+  gru_layers: 1
+  comm_attention_heads: 4
+  comm_embedding_dim: 64
+  gumbel_temperature: 1.0
+  ppo_clip: 0.2
+  ppo_epochs: 4
+  minibatch_size: 1024
+  learning_rate: 3.0e-4
+  entropy_coef: 0.015
+  value_coef: 0.5
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+
+training:
+  num_envs: 16
+  rollout_steps: 256
+  total_episodes: 50000
+  checkpoint_every_episodes: 500
+  eval_every_episodes: 250
+  curriculum:
+    enabled: false
+    stages:
+      - { name: "1v1_no_eco",   team_size: 1, max_rounds: 6,  use_economy: false, episodes: 2000 }
+      - { name: "2v2_no_eco",   team_size: 2, max_rounds: 8,  use_economy: false, episodes: 3000 }
+      - { name: "3v3_basic_eco",team_size: 3, max_rounds: 12, use_economy: true,  episodes: 5000 }
+      - { name: "5v5_full",     team_size: 5, max_rounds: 24, use_economy: true,  episodes: 40000 }
+
+league:
+  population_size: 4
+  snapshot_every_episodes: 1000
+  exploit_fraction: 0.25      # how often we train vs frozen exploit opponents
+  random_fraction: 0.10       # how often we train vs random baseline
+  scripted_fraction: 0.10     # how often we train vs scripted heuristic
+
+reward_shaping:
+  enabled: true
+  decay_after_episodes: 20000  # linearly decay shaping to zero by this episode
+  damage_dealt_per_hp: 0.005
+  damage_received_per_hp: -0.003
+  survival_per_second: 0.001
+  successful_plant: 0.5
+  successful_defuse: 0.4
+  bomb_pickup: 0.05
+  useful_trade: 0.15
+  pointless_death: -0.20
+  map_control_per_tile: 0.0008
+
+telemetry:
+  backend: csv               # csv | wandb | tensorboard | all
+  log_every_episodes: 10
+  flush_every_seconds: 5
+
+evaluation:
+  baselines: [random, scripted_rush, scripted_hold, frozen_latest]
+  scenarios:
+    - { name: full_pistol,       team_size: 5, money_override: 800 }
+    - { name: full_buy,          team_size: 5, money_override: 5000 }
+    - { name: retake_2v3,        attackers: 3, defenders: 2, scenario: "post_plant" }
+    - { name: save_round,        team_size: 5, money_override: 0 }
+  matches_per_scenario: 20
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  tick_broadcast_hz: 20
+  max_clients: 4

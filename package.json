@@ -1,0 +1,20 @@
+{
+  "name": "kivski-tactical-ai-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kivski Tactical AI Simulator monorepo root.",
+  "license": "MIT",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm --workspace apps/web run dev",
+    "build": "npm --workspace apps/web run build",
+    "preview": "npm --workspace apps/web run preview",
+    "lint": "npm --workspace apps/web run lint",
+    "typecheck": "npm --workspace apps/web run typecheck"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

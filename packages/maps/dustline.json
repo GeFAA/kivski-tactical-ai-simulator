@@ -1,0 +1,105 @@
+{
+  "name": "dustline",
+  "version": 1,
+  "width": 60,
+  "height": 40,
+  "tile_size": 1.0,
+  "description": "Original Kivski map 'Dustline' - two bombsites (A top-right, B bottom-left), Yellow spawn top-left, Blue spawn bottom-right. Multiple rotations through mid and outer corridors. All corridors connect via doorway gaps.",
+  "spawns": {
+    "attacker": [
+      [3.5, 3.5],
+      [5.0, 3.5],
+      [6.5, 3.5],
+      [4.0, 5.0],
+      [6.0, 5.0]
+    ],
+    "defender": [
+      [53.5, 36.5],
+      [55.0, 36.5],
+      [56.5, 36.5],
+      [54.0, 35.0],
+      [56.0, 35.0]
+    ]
+  },
+  "bombsites": {
+    "A": {
+      "center": [50.0, 9.5],
+      "polygon": [[46.0, 6.0], [54.0, 6.0], [54.0, 13.0], [46.0, 13.0]]
+    },
+    "B": {
+      "center": [12.0, 31.5],
+      "polygon": [[8.0, 28.0], [16.0, 28.0], [16.0, 35.0], [8.0, 35.0]]
+    }
+  },
+  "walls": [
+    { "polygon": [[0.0, 0.0], [60.0, 0.0], [60.0, 1.0], [0.0, 1.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[0.0, 39.0], [60.0, 39.0], [60.0, 40.0], [0.0, 40.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[0.0, 0.0], [1.0, 0.0], [1.0, 40.0], [0.0, 40.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[59.0, 0.0], [60.0, 0.0], [60.0, 40.0], [59.0, 40.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[8.0, 1.0], [9.0, 1.0], [9.0, 4.0], [8.0, 4.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[1.0, 7.0], [4.0, 7.0], [4.0, 8.0], [1.0, 8.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[7.0, 7.0], [9.0, 7.0], [9.0, 8.0], [7.0, 8.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[51.0, 32.0], [56.0, 32.0], [56.0, 33.0], [51.0, 33.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[51.0, 33.0], [52.0, 33.0], [52.0, 39.0], [51.0, 39.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[1.0, 13.0], [10.0, 13.0], [10.0, 14.0], [1.0, 14.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[14.0, 13.0], [22.0, 13.0], [22.0, 14.0], [14.0, 14.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[27.0, 13.0], [37.0, 13.0], [37.0, 14.0], [27.0, 14.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[41.0, 13.0], [44.0, 13.0], [44.0, 14.0], [41.0, 14.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[16.0, 26.0], [22.0, 26.0], [22.0, 27.0], [16.0, 27.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[26.0, 26.0], [33.0, 26.0], [33.0, 27.0], [26.0, 27.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[38.0, 26.0], [50.0, 26.0], [50.0, 27.0], [38.0, 27.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[54.0, 26.0], [59.0, 26.0], [59.0, 27.0], [54.0, 27.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[21.0, 14.0], [22.0, 14.0], [22.0, 18.0], [21.0, 18.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[38.0, 22.0], [39.0, 22.0], [39.0, 26.0], [38.0, 26.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[16.0, 27.0], [17.0, 27.0], [17.0, 31.0], [16.0, 31.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[43.0, 14.0], [44.0, 14.0], [44.0, 18.0], [43.0, 18.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[27.0, 7.0], [28.0, 7.0], [28.0, 11.0], [27.0, 11.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[32.0, 28.0], [33.0, 28.0], [33.0, 33.0], [32.0, 33.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[24.0, 18.0], [29.0, 18.0], [29.0, 19.0], [24.0, 19.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[31.0, 18.0], [36.0, 18.0], [36.0, 19.0], [31.0, 19.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[24.0, 21.0], [29.0, 21.0], [29.0, 22.0], [24.0, 22.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[31.0, 21.0], [36.0, 21.0], [36.0, 22.0], [31.0, 22.0]], "blocks_movement": true, "blocks_sight": true },
+
+    { "polygon": [[45.0, 11.0], [46.0, 11.0], [46.0, 14.0], [45.0, 14.0]], "blocks_movement": true, "blocks_sight": true },
+    { "polygon": [[14.0, 26.0], [15.0, 26.0], [15.0, 30.0], [14.0, 30.0]], "blocks_movement": true, "blocks_sight": true }
+  ],
+  "cover": [
+    { "polygon": [[12.0, 10.0], [14.0, 10.0], [14.0, 12.0], [12.0, 12.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[47.0, 30.0], [49.0, 30.0], [49.0, 32.0], [47.0, 32.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[29.5, 9.0], [31.0, 9.0], [31.0, 11.0], [29.5, 11.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[30.0, 29.0], [31.5, 29.0], [31.5, 31.0], [30.0, 31.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[48.0, 8.5], [49.5, 8.5], [49.5, 10.5], [48.0, 10.5]], "blocks_movement": true, "blocks_sight": false, "low": true },
+    { "polygon": [[10.5, 30.0], [12.0, 30.0], [12.0, 32.0], [10.5, 32.0]], "blocks_movement": true, "blocks_sight": false, "low": true },
+    { "polygon": [[29.0, 15.0], [31.0, 15.0], [31.0, 16.5], [29.0, 16.5]], "blocks_movement": true, "blocks_sight": false, "low": true },
+    { "polygon": [[29.0, 23.5], [31.0, 23.5], [31.0, 25.0], [29.0, 25.0]], "blocks_movement": true, "blocks_sight": false, "low": true },
+    { "polygon": [[40.0, 10.0], [41.5, 10.0], [41.5, 12.0], [40.0, 12.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[18.5, 28.0], [20.0, 28.0], [20.0, 30.0], [18.5, 30.0]], "blocks_movement": true, "blocks_sight": true, "low": false },
+    { "polygon": [[52.0, 11.0], [53.5, 11.0], [53.5, 12.5], [52.0, 12.5]], "blocks_movement": true, "blocks_sight": false, "low": true },
+    { "polygon": [[8.5, 28.5], [10.0, 28.5], [10.0, 30.0], [8.5, 30.0]], "blocks_movement": true, "blocks_sight": false, "low": true }
+  ],
+  "named_areas": [
+    { "name": "YellowSpawn", "polygon": [[1.0, 1.0], [8.0, 1.0], [8.0, 7.0], [1.0, 7.0]] },
+    { "name": "BlueSpawn", "polygon": [[52.0, 33.0], [59.0, 33.0], [59.0, 39.0], [52.0, 39.0]] },
+    { "name": "BombsiteA", "polygon": [[46.0, 6.0], [54.0, 6.0], [54.0, 13.0], [46.0, 13.0]] },
+    { "name": "BombsiteB", "polygon": [[8.0, 28.0], [16.0, 28.0], [16.0, 35.0], [8.0, 35.0]] },
+    { "name": "Mid", "polygon": [[22.0, 14.0], [38.0, 14.0], [38.0, 26.0], [22.0, 26.0]] },
+    { "name": "MidPit", "polygon": [[25.0, 19.0], [35.0, 19.0], [35.0, 21.0], [25.0, 21.0]] },
+    { "name": "A-Long", "polygon": [[9.0, 1.0], [46.0, 1.0], [46.0, 7.0], [9.0, 7.0]] },
+    { "name": "A-Short", "polygon": [[28.0, 7.0], [45.0, 7.0], [45.0, 13.0], [28.0, 13.0]] },
+    { "name": "A-Connector", "polygon": [[44.0, 14.0], [54.0, 14.0], [54.0, 19.0], [44.0, 19.0]] },
+    { "name": "B-Tunnel", "polygon": [[1.0, 33.0], [16.0, 33.0], [16.0, 39.0], [1.0, 39.0]] },
+    { "name": "B-Ramp", "polygon": [[17.0, 27.0], [32.0, 27.0], [32.0, 33.0], [17.0, 33.0]] },
+    { "name": "B-Connector", "polygon": [[6.0, 21.0], [16.0, 21.0], [16.0, 27.0], [6.0, 27.0]] },
+    { "name": "YellowFlank", "polygon": [[1.0, 8.0], [22.0, 8.0], [22.0, 13.0], [1.0, 13.0]] },
+    { "name": "BlueRotate", "polygon": [[39.0, 27.0], [59.0, 27.0], [59.0, 32.0], [39.0, 32.0]] }
+  ]
+}

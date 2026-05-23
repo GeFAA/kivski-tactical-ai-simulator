@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- Base ---------- */
+@layer base {
+  html,
+  body,
+  #root {
+    @apply h-full w-full;
+  }
+
+  body {
+    @apply bg-kivski-bg text-kivski-text antialiased;
+    font-feature-settings:
+      "ss01" on,
+      "cv11" on;
+  }
+
+  /* Stats / numeric data in the HUD use a mono font for tabular layout. */
+  .stat,
+  .hud-num,
+  code {
+    @apply font-mono tabular-nums;
+  }
+
+  /* Subtle scrollbar styling for dark panels (Chromium / WebKit) */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #232a37;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2f3949;
+  }
+}
+
+/* ---------- Reusable component classes ---------- */
+@layer components {
+  .panel {
+    @apply bg-kivski-panel rounded-md border border-kivski-border shadow-panel;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between border-b border-kivski-border px-3 py-2 text-xs font-semibold uppercase tracking-wider text-kivski-muted;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded border border-kivski-border bg-kivski-panel-2 px-2.5 py-1 text-xs font-medium text-kivski-text transition-colors hover:bg-[#222c40] active:bg-[#1b2434] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply border-kivski-defender/40 bg-kivski-defender/15 text-kivski-defender hover:bg-kivski-defender/25;
+  }
+
+  .btn-danger {
+    @apply border-kivski-hp-low/40 bg-kivski-hp-low/15 text-kivski-hp-low hover:bg-kivski-hp-low/25;
+  }
+
+  .pill {
+    @apply inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider;
+  }
+}
