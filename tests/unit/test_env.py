@@ -297,6 +297,108 @@ def test_render_returns_snapshot(env: KivskiParallelEnv) -> None:
     assert hasattr(snap, "bomb")
 
 
+def test_env_frame_skip(small_cfg: KivskiConfig) -> None:
+    """A frame-skipped env must call engine.step() exactly N times per env.step()."""
+    map_data = load_map("dustline")
+    env_skip = KivskiParallelEnv(
+        config=small_cfg,
+        map_name="dustline",
+        seed=11,
+        map_data=map_data,
+        frame_skip=4,
+    )
+    env_skip.reset(seed=11)
+    assert env_skip.frame_skip == 4
+    # Force LIVE phase so the engine tick rate is uncomplicated by buy phases.
+    env_skip.engine.state.phase = Phase.LIVE
+    env_skip.engine.state.phase_ticks_remaining = 500
+    pre_tick = int(env_skip.engine.state.tick)
+    env_skip.step(_hold_actions(env_skip))
+    post_tick = int(env_skip.engine.state.tick)
+    # Engine should have advanced by frame_skip ticks (assuming no early
+    # match termination, which a HOLD action cannot trigger this fast).
+    assert post_tick - pre_tick == 4, f"expected 4 inner ticks, got {post_tick - pre_tick}"
+
+
+def test_env_frame_skip_default_one(small_cfg: KivskiConfig) -> None:
+    """Default frame_skip is 1 unless overridden -- live viewer compatibility."""
+    map_data = load_map("dustline")
+    env_default = KivskiParallelEnv(
+        config=small_cfg, map_name="dustline", seed=11, map_data=map_data
+    )
+    env_default.reset(seed=11)
+    assert env_default.frame_skip == int(getattr(small_cfg.simulation, "frame_skip", 1) or 1)
+
+
+def test_env_frame_skip_rewards_accumulate(small_cfg: KivskiConfig) -> None:
+    """Rewards from N inner ticks must sum into the returned reward."""
+    map_data = load_map("dustline")
+    env_skip = KivskiParallelEnv(
+        config=small_cfg, map_name="dustline", seed=22, map_data=map_data, frame_skip=3
+    )
+    env_default = KivskiParallelEnv(
+        config=small_cfg, map_name="dustline", seed=22, map_data=map_data, frame_skip=1
+    )
+    env_skip.reset(seed=22)
+    env_default.reset(seed=22)
+    # Force LIVE and a long horizon so neither env terminates early.
+    for env in (env_skip, env_default):
+        env.engine.state.phase = Phase.LIVE
+        env.engine.state.phase_ticks_remaining = 500
+
+    actions = _hold_actions(env_skip)
+    _, rewards_skip, _, _, _ = env_skip.step(actions)
+    sum_default = {name: 0.0 for name in env_default.possible_agents}
+    for _ in range(3):
+        _, r_step, _, _, _ = env_default.step(actions)
+        for name, r in r_step.items():
+            sum_default[name] += float(r)
+    # Both runs operate on the same engine seed + identical actions, so the
+    # frame-skipped sum should match the explicit step-by-step accumulation.
+    for name in env_skip.possible_agents:
+        assert rewards_skip[name] == pytest.approx(sum_default[name], abs=1e-6), name
+
+
+def test_env_set_curriculum_stage_gates_features(small_cfg: KivskiConfig) -> None:
+    """Disabling the ``survive`` feature must zero the survival shaping reward."""
+    map_data = load_map("dustline")
+    env_with = KivskiParallelEnv(
+        config=small_cfg, map_name="dustline", seed=33, map_data=map_data, frame_skip=1
+    )
+    env_with.reset(seed=33)
+    env_with.engine.state.phase = Phase.LIVE
+    env_with.engine.state.phase_ticks_remaining = 50
+    # Reset prev snapshot so reward delta-comparison is clean.
+    env_with.set_shaping_factor(1.0)
+    env_without = KivskiParallelEnv(
+        config=small_cfg, map_name="dustline", seed=33, map_data=map_data, frame_skip=1
+    )
+    env_without.reset(seed=33)
+    env_without.engine.state.phase = Phase.LIVE
+    env_without.engine.state.phase_ticks_remaining = 50
+    env_without.set_shaping_factor(1.0)
+    # Disable everything *except* "survive" on the gated env -- both should
+    # then produce identical per-step reward because HOLD doesn't deal/take
+    # damage or trigger any of the other buckets.
+    env_with.set_curriculum_stage("survive_only", ["survive"])
+
+    actions = _hold_actions(env_with)
+    _, r_gated, _, _, _ = env_with.step(actions)
+    _, r_open, _, _, _ = env_without.step(actions)
+    # All alive agents got survival per tick on both envs -> equal totals.
+    for name in env_with.possible_agents:
+        assert r_gated[name] == pytest.approx(r_open[name], abs=1e-6), name
+
+    # Now disable "survive" on the gated env and verify the survival bonus
+    # disappears entirely (HOLDing alive agents would otherwise net a tiny
+    # positive reward).
+    env_with.set_curriculum_stage("killshoot", ["damage_dealt"])
+    _, r_no_survive, _, _, _ = env_with.step(actions)
+    for name in env_with.possible_agents:
+        # HOLD + no damage + no plant -> reward should be 0 when survive is gated.
+        assert abs(float(r_no_survive[name])) < 1e-6, (name, r_no_survive[name])
+
+
 def test_step_with_comms_payload_in_info(env: KivskiParallelEnv) -> None:
     env.reset(seed=0)
     # Force LIVE so that the engine actually broadcasts comm messages

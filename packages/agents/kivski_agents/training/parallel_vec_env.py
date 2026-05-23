@@ -333,6 +333,17 @@ class ThreadedVecEnv:
             self.close()
 
     # ------------------------------------------------------------------
+    # Reward curriculum (broadcasts to every wrapped env)
+    # ------------------------------------------------------------------
+
+    def set_curriculum_stage(
+        self, stage_name: str, features: list[str] | None
+    ) -> None:
+        for env in self.envs:
+            with contextlib.suppress(Exception):
+                env.set_curriculum_stage(stage_name, features)
+
+    # ------------------------------------------------------------------
     # Side / team helpers
     # ------------------------------------------------------------------
 
@@ -520,6 +531,14 @@ def _subproc_worker_loop(
                     "summaries": summaries,
                 }
                 remote.send(("match_summary_ok", summary))
+            elif cmd == "set_curriculum_stage":
+                stage_name, features = payload
+                for env in envs:
+                    try:
+                        env.set_curriculum_stage(stage_name, features)
+                    except Exception:  # noqa: BLE001 - never let one env kill the loop
+                        pass
+                remote.send(("set_curriculum_stage_ok", True))
             elif cmd == "close":
                 break
             else:  # pragma: no cover - protocol bug
@@ -890,6 +909,30 @@ class SubprocVecEnv:
     def __del__(self) -> None:  # pragma: no cover - defensive cleanup
         with contextlib.suppress(Exception):
             self.close()
+
+    # ------------------------------------------------------------------
+    # Reward curriculum (broadcasts to every worker + the anchor env)
+    # ------------------------------------------------------------------
+
+    def set_curriculum_stage(
+        self, stage_name: str, features: list[str] | None
+    ) -> None:
+        if self._closed:
+            return
+        # Update the anchor env (used for one-off ``render`` calls).
+        with contextlib.suppress(Exception):
+            self._anchor_env.set_curriculum_stage(stage_name, features)
+        # Broadcast to every worker subprocess.
+        for remote in self._remotes:
+            with contextlib.suppress(Exception):
+                remote.send(("set_curriculum_stage", (stage_name, features)))
+        for remote in self._remotes:
+            try:
+                tag, _ = remote.recv()
+                if tag != "set_curriculum_stage_ok":  # pragma: no cover - protocol bug
+                    pass
+            except Exception:  # noqa: BLE001 - best-effort
+                pass
 
     # ------------------------------------------------------------------
     # Side / team helpers

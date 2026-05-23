@@ -226,6 +226,7 @@ class KivskiParallelEnv(ParallelEnv):
         seed: int | None = None,
         *,
         map_data: MapData | None = None,
+        frame_skip: int | None = None,
     ) -> None:
         super().__init__()
         self._cfg: KivskiConfig = config
@@ -239,6 +240,20 @@ class KivskiParallelEnv(ParallelEnv):
         # The wrapper-controlled "shaping factor" multiplies every dense reward.
         # 1.0 = full shaping (subject to config flag); 0.0 = pure outcome rewards.
         self._shaping_factor: float = 1.0 if bool(config.reward_shaping.enabled) else 0.0
+
+        # Frame-skip (action repeat). Constructor arg wins over cfg so tests
+        # can override without rebuilding the config. Clamped to >=1 so
+        # `range(self._frame_skip)` always runs at least once.
+        if frame_skip is None:
+            frame_skip = int(getattr(config.simulation, "frame_skip", 1) or 1)
+        self._frame_skip: int = max(1, int(frame_skip))
+
+        # Reward-curriculum gate. When the trainer flips a stage we filter
+        # the dense reward components in :meth:`_compute_rewards` to only
+        # those buckets present in `_active_reward_features` (or all when
+        # the gate is None = curriculum disabled).
+        self._active_reward_features: set[str] | None = None
+        self._curriculum_stage_name: str = "default"
 
         # Number of agents per team and total -- locked for the whole episode.
         self._team_size: int = int(config.simulation.team_size)
@@ -402,6 +417,12 @@ class KivskiParallelEnv(ParallelEnv):
         :attr:`ActionBundle.comm_payload` and surfaced to receivers through
         ``info["comm_messages"]`` so policies can run TarMAC-style attention
         over them.
+
+        When :attr:`frame_skip` > 1, the same engine action is replayed
+        for ``frame_skip`` inner ticks and rewards are summed before they
+        are returned to the caller. Observations / terminations come from
+        the *last* inner tick. Memory updates run after each inner tick
+        so partial-observability buffers stay coherent.
         """
         if self._needs_reset:
             raise RuntimeError("KivskiParallelEnv.step called before reset()")
@@ -410,37 +431,53 @@ class KivskiParallelEnv(ParallelEnv):
         # dict[int, ActionBundle], merging in any optional comm payloads.
         engine_actions = self._decode_actions(actions, comm_payloads)
 
-        # 2) Remember pre-step state so we can compute reward deltas.
-        pre_snapshot = self._snapshot_agent_minisnapshot()
-        pre_match_outcome = self._engine.state.match_outcome
-        pre_round_id = int(self._engine.state.round_id)
+        rewards: dict[str, float] = dict.fromkeys(self._possible_agents, 0.0)
+        observations: dict[str, np.ndarray] = {}
+        terminations: dict[str, bool] = {}
+        truncations: dict[str, bool] = {}
+        infos: dict[str, dict[str, Any]] = {}
+        any_terminal = False
 
-        # 3) Drive the engine forward. ``light_snapshot=True`` skips the
-        # JSON-serialisable agent/event/message lists in the engine's
-        # return value -- the env wrapper reads engine.state directly so
-        # those fields are pure overhead during training.
-        snap, engine_rewards, _engine_done = self._engine.step(engine_actions, light_snapshot=True)
+        for _ in range(self._frame_skip):
+            # 2) Remember pre-step state so we can compute reward deltas.
+            pre_snapshot = self._snapshot_agent_minisnapshot()
+            pre_match_outcome = self._engine.state.match_outcome
+            pre_round_id = int(self._engine.state.round_id)
 
-        # 4) Update the per-agent memory using the post-step snapshot.
-        self._update_memory(snap)
+            # 3) Drive the engine forward. ``light_snapshot=True`` skips the
+            # JSON-serialisable agent/event/message lists in the engine's
+            # return value -- the env wrapper reads engine.state directly so
+            # those fields are pure overhead during training.
+            snap, engine_rewards, _engine_done = self._engine.step(
+                engine_actions, light_snapshot=True
+            )
 
-        # 5) Build observations / rewards / terminations / truncations / infos.
-        observations = self._build_all_observations()
-        rewards = self._compute_rewards(
-            engine_rewards=engine_rewards,
-            pre_snapshot=pre_snapshot,
-            pre_round_id=pre_round_id,
-            pre_match_outcome=pre_match_outcome,
-        )
-        terminations = self._compute_terminations()
-        truncations = self._compute_truncations()
-        infos = self._build_all_infos()
+            # 4) Update the per-agent memory using the post-step snapshot.
+            self._update_memory(snap)
 
-        # Cache for next step.
-        self._prev_agent_snapshot = self._snapshot_agent_minisnapshot()
-        self._round_id_at_last_step = int(self._engine.state.round_id)
+            # 5) Build observations / rewards / terminations / truncations / infos.
+            observations = self._build_all_observations()
+            inner_rewards = self._compute_rewards(
+                engine_rewards=engine_rewards,
+                pre_snapshot=pre_snapshot,
+                pre_round_id=pre_round_id,
+                pre_match_outcome=pre_match_outcome,
+            )
+            for name, r in inner_rewards.items():
+                rewards[name] = float(rewards[name]) + float(r)
+            terminations = self._compute_terminations()
+            truncations = self._compute_truncations()
+            infos = self._build_all_infos()
 
-        if all(terminations.values()) or all(truncations.values()):
+            # Cache for next inner step.
+            self._prev_agent_snapshot = self._snapshot_agent_minisnapshot()
+            self._round_id_at_last_step = int(self._engine.state.round_id)
+
+            if all(terminations.values()) or all(truncations.values()):
+                any_terminal = True
+                break
+
+        if any_terminal:
             self._needs_reset = True
             self._episodes_done += 1
         return observations, rewards, terminations, truncations, infos
@@ -465,6 +502,60 @@ class KivskiParallelEnv(ParallelEnv):
 
     def get_shaping_factor(self) -> float:
         return float(self._shaping_factor)
+
+    # ------------------------------------------------------------------
+    # Reward curriculum controls
+    # ------------------------------------------------------------------
+
+    def set_curriculum_stage(
+        self, stage_name: str, features: list[str] | tuple[str, ...] | set[str] | None
+    ) -> None:
+        """Activate a reward-curriculum stage by name.
+
+        Args:
+            stage_name: Free-form label for logging (no behavioural effect).
+            features: Bucket names allowed to contribute to dense rewards
+                this stage. ``["all"]`` or ``None`` enables every bucket
+                (= disables the curriculum gate). Recognised buckets:
+                ``kill``, ``survive``, ``damage_dealt``, ``damage_received``,
+                ``bomb_pickup``, ``bomb_plant``, ``bomb_defuse``,
+                ``useful_trade``, ``pointless_death``, ``map_control``.
+        """
+        self._curriculum_stage_name = str(stage_name)
+        if features is None:
+            self._active_reward_features = None
+            return
+        feats = {str(f).strip().lower() for f in features}
+        if not feats or "all" in feats:
+            self._active_reward_features = None
+            return
+        self._active_reward_features = feats
+
+    def get_curriculum_stage(self) -> tuple[str, set[str] | None]:
+        """Return ``(stage_name, active_features_or_None)`` (None == all)."""
+        return (
+            self._curriculum_stage_name,
+            set(self._active_reward_features) if self._active_reward_features is not None else None,
+        )
+
+    def _feature_enabled(self, feature: str) -> bool:
+        """Return True iff ``feature`` is in the current curriculum stage."""
+        if self._active_reward_features is None:
+            return True
+        return feature in self._active_reward_features
+
+    # ------------------------------------------------------------------
+    # Frame-skip introspection
+    # ------------------------------------------------------------------
+
+    @property
+    def frame_skip(self) -> int:
+        """Number of engine ticks consumed per env.step()."""
+        return int(self._frame_skip)
+
+    def set_frame_skip(self, frame_skip: int) -> None:
+        """Override frame-skip at runtime. Clamped to >=1."""
+        self._frame_skip = max(1, int(frame_skip))
 
     def shaping_factor_for_episode(self) -> float:
         """Compute the schedule-implied shaping factor for the current episode.
@@ -968,22 +1059,27 @@ class KivskiParallelEnv(ParallelEnv):
                 # round_summaries reset damage_done_round, so we use the post-step
                 # value directly as the delta-since-round-start.
                 dmg_dealt = float(a.damage_done_round)
-            if dmg_dealt > 0.0:
+            if dmg_dealt > 0.0 and self._feature_enabled("damage_dealt"):
                 shaping += float(rs.damage_dealt_per_hp) * dmg_dealt
 
             # Damage received this tick.
             dmg_recv = float(a.damage_taken_round) - float(pre["damage_taken_round"])
             if round_changed:
                 dmg_recv = float(a.damage_taken_round)
-            if dmg_recv > 0.0:
+            if dmg_recv > 0.0 and self._feature_enabled("damage_received"):
                 shaping += float(rs.damage_received_per_hp) * dmg_recv
 
             # Survival reward: small per-tick bonus while alive.
-            if a.alive:
+            if a.alive and self._feature_enabled("survive"):
                 shaping += float(rs.survival_per_second) * dt
 
             # Bomb pickup: had no bomb before, has it now (and we are attacker).
-            if (not bool(pre["has_bomb"])) and a.has_bomb and a.side == Side.ATTACKER:
+            if (
+                (not bool(pre["has_bomb"]))
+                and a.has_bomb
+                and a.side == Side.ATTACKER
+                and self._feature_enabled("bomb_pickup")
+            ):
                 shaping += float(rs.bomb_pickup)
 
             # Death bookkeeping.
@@ -992,7 +1088,10 @@ class KivskiParallelEnv(ParallelEnv):
                 mem = self._memory[name]
                 mem.last_death_tick = int(self._engine.state.tick)
                 # Pointless death: died without dealing any damage in the round.
-                if float(pre["damage_done_round"]) <= 0.0:
+                if (
+                    float(pre["damage_done_round"]) <= 0.0
+                    and self._feature_enabled("pointless_death")
+                ):
                     shaping += float(rs.pointless_death)
             # Kill bookkeeping (alive agents that increased kill count).
             if a.alive:
@@ -1032,13 +1131,15 @@ class KivskiParallelEnv(ParallelEnv):
                     if cur_tick - int(tmem.last_death_tick) <= trade_window_ticks:
                         recent_team_death = True
                         break
-                if recent_team_death:
+                if recent_team_death and self._feature_enabled("useful_trade"):
                     rewards[name] = float(rewards[name]) + float(rs.useful_trade) * factor
 
         # Plant / defuse bonuses: detect transitions to PLANTED / DEFUSED.
         bomb_phase = self._engine.state.bomb.phase
-        if bomb_phase == BombPhase.PLANTED and self._round_id_at_last_step == int(
-            self._engine.state.round_id
+        if (
+            bomb_phase == BombPhase.PLANTED
+            and self._round_id_at_last_step == int(self._engine.state.round_id)
+            and self._feature_enabled("bomb_plant")
         ):
             # All attackers get a slice (rewarded once per phase change is hard to
             # detect cheaply; we let the engine's outcome reward handle the bulk
@@ -1047,7 +1148,7 @@ class KivskiParallelEnv(ParallelEnv):
             for a in self._engine.state.agents:
                 if a.side == Side.ATTACKER and a.alive:
                     rewards[agent_name(int(a.agent_id))] += float(rs.successful_plant) * factor * 0.05
-        elif bomb_phase == BombPhase.DEFUSED:
+        elif bomb_phase == BombPhase.DEFUSED and self._feature_enabled("bomb_defuse"):
             for a in self._engine.state.agents:
                 if a.side == Side.DEFENDER and a.alive:
                     rewards[agent_name(int(a.agent_id))] += float(rs.successful_defuse) * factor * 0.5

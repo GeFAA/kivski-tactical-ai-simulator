@@ -47,7 +47,7 @@ from kivski_agents.metrics import (
 )
 from kivski_agents.policy_runner import PolicyBundle, PolicyRunner
 from kivski_agents.telemetry import NoOpSink, TelemetrySink
-from kivski_agents.training.curriculum import CurriculumManager
+from kivski_agents.training.curriculum import CurriculumManager, RewardCurriculumManager
 from kivski_agents.training.league import LeagueManager
 from kivski_agents.training.parallel_vec_env import (
     SubprocVecEnv,
@@ -124,6 +124,10 @@ class Trainer:
         # 1) Curriculum stage -> effective config.
         self.curriculum: CurriculumManager = CurriculumManager(cfg)
         self.active_cfg: KivskiConfig = self._cfg_with_safety_overrides(self.curriculum.current_config())
+        # Reward curriculum (independent of structural curriculum). When
+        # enabled, gates the dense-reward shaping buckets per stage so the
+        # agent can be guided through "killshoot -> objective -> full".
+        self.reward_curriculum: RewardCurriculumManager = RewardCurriculumManager(self.active_cfg)
 
         # 2) Vec env. ``make_vec_env`` honours ``tcfg.vec_kind`` and falls
         # back to the synchronous wrapper if the parallel backend can't
@@ -137,6 +141,8 @@ class Trainer:
             kind=str(tcfg.vec_kind),
             num_workers=tcfg.num_workers,
         )
+        # Apply the initial reward-curriculum stage to every env in the batch.
+        self._apply_reward_curriculum()
         # 3) Model + trainer.
         team_size = int(self.active_cfg.simulation.team_size)
         obs_dim = int(self.vec_env.obs_dim)
@@ -285,6 +291,12 @@ class Trainer:
                 self._handle_stage_flip()
                 # Hidden state is bound to the old model dimensions; drop it.
                 carry_hidden = None
+
+            # ---- h2) Advance reward curriculum -------------------------
+            # Reward stages don't change tensor shapes so we never need to
+            # drop the hidden state -- we just rebroadcast the feature gate.
+            if self.reward_curriculum.advance(new_episodes):
+                self._apply_reward_curriculum()
 
             # If no new episodes were finished in the rollout (very short
             # rollouts on long matches), we should still bump the loop counter
@@ -540,6 +552,8 @@ class Trainer:
                 kind=str(self.tcfg.vec_kind),
                 num_workers=self.tcfg.num_workers,
             )
+            # The new envs were built without our curriculum gate; re-apply.
+            self._apply_reward_curriculum()
             return
 
         # Team size changed -> rebuild everything that depends on it.
@@ -581,6 +595,27 @@ class Trainer:
         # Re-anchor the league on the new env / model.
         self.league.env = self.vec_env.envs[0]
         self.league.set_main_model(self.model)
+        # Same logic as the cheap path -- new envs need the curriculum gate.
+        self._apply_reward_curriculum()
+
+    def _apply_reward_curriculum(self) -> None:
+        """Push the current reward-curriculum stage out to every env."""
+        if not self.reward_curriculum.enabled:
+            return
+        state = self.reward_curriculum.state
+        try:
+            self.vec_env.set_curriculum_stage(state.stage_name, list(state.features))
+        except Exception:  # noqa: BLE001 - never fatal
+            pass
+        # Also log so the user can see the flip in the metrics jsonl.
+        with contextlib.suppress(Exception):
+            self.telemetry.log_dict(
+                {
+                    "live/reward_curriculum_stage": float(state.stage_index),
+                    "live/reward_curriculum_stage_name": str(state.stage_name),
+                },
+                step=self.update_step,
+            )
 
     @staticmethod
     def _cfg_with_safety_overrides(cfg: KivskiConfig) -> KivskiConfig:

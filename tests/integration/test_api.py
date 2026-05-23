@@ -169,6 +169,60 @@ def test_load_missing_checkpoint_404(client: TestClient) -> None:
     assert resp.status_code == 404
 
 
+def test_recommended_checkpoints_endpoint(client: TestClient) -> None:
+    """The A/B comparison endpoint always returns at least the three baselines."""
+    resp = client.get("/api/checkpoints/recommended")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "options" in body
+    ids = {o["id"] for o in body["options"]}
+    assert {"random", "scripted_rush", "scripted_hold"}.issubset(ids)
+
+
+def test_new_match_with_named_policies_returns_resolved_names(client: TestClient) -> None:
+    """POST /api/match/new with scripted_rush vs random must echo both names back."""
+    resp = client.post(
+        "/api/match/new",
+        json={
+            "seed": 42,
+            "map": "dustline",
+            "policy_yellow": "scripted_rush",
+            "policy_blue": "random",
+            "autostart": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["policy_yellow"] == "scripted_rush"
+    assert body["policy_blue"] == "random"
+    assert body["policy_yellow_name"] == "scripted_rush"
+    assert body["policy_blue_name"] == "random"
+
+
+def test_new_match_without_policies_falls_back_to_random_when_no_ckpt(
+    client: TestClient, monkeypatch
+) -> None:
+    """When no checkpoints exist, both sides default to RandomPolicy."""
+    from kivski_api import session as session_module
+
+    # Force the auto-default branch to fall back to "random".
+    monkeypatch.setattr(session_module, "latest_checkpoint_path", lambda: None)
+    resp = client.post(
+        "/api/match/new",
+        json={
+            "seed": 42,
+            "map": "dustline",
+            "policy_yellow": None,
+            "policy_blue": None,
+            "autostart": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["policy_yellow_name"] == "random"
+    assert body["policy_blue_name"] == "random"
+
+
 # ---------------------------------------------------------------------------
 # Training status (no job yet)
 # ---------------------------------------------------------------------------

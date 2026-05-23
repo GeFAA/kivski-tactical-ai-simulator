@@ -23,9 +23,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from kivski_sim.config import CurriculumStage, KivskiConfig
+from kivski_sim.config import (
+    CurriculumStage,
+    KivskiConfig,
+    RewardCurriculumStage,
+)
 
-__all__ = ["CurriculumManager", "CurriculumState"]
+__all__ = [
+    "CurriculumManager",
+    "CurriculumState",
+    "RewardCurriculumManager",
+    "RewardCurriculumState",
+]
 
 
 # An effectively-infinite starting_money value for ``use_economy=False`` stages.
@@ -162,6 +171,130 @@ class CurriculumManager:
 
     # ------------------------------------------------------------------
     # Serialisation helpers
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "stage_index": int(self._current_idx),
+            "episodes_in_stage": int(self._episodes_in_stage),
+            "total_stages": int(len(self.stages)),
+        }
+
+    def load_state(self, raw: dict[str, Any]) -> None:
+        self._current_idx = int(raw.get("stage_index", 0))
+        self._episodes_in_stage = int(raw.get("episodes_in_stage", 0))
+
+
+# ---------------------------------------------------------------------------
+# Reward curriculum
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RewardCurriculumState:
+    """Snapshot of the reward curriculum's current position."""
+
+    stage_index: int
+    stage_name: str
+    episodes_in_stage: int
+    total_stages: int
+    enabled: bool
+    features: list[str]
+
+
+class RewardCurriculumManager:
+    """Walks through ``cfg.reward_curriculum.stages`` for dense-reward gating.
+
+    Distinct from :class:`CurriculumManager` (which mutates structural
+    settings like team_size). This manager only tracks which *reward
+    feature buckets* are active so :meth:`KivskiParallelEnv.set_curriculum_stage`
+    can gate the dense reward function. The trainer is responsible for
+    counting episodes and calling :meth:`advance` after every rollout.
+
+    Stages with ``episodes=-1`` are "open-ended" -- once entered, the
+    manager never advances past them. This is the natural fit for the
+    last stage which should remain active for the rest of training.
+    """
+
+    def __init__(self, base_cfg: KivskiConfig) -> None:
+        self._base: KivskiConfig = base_cfg
+        cfg = base_cfg.reward_curriculum
+        self.enabled: bool = bool(cfg.enabled) and bool(cfg.stages)
+        self.stages: list[RewardCurriculumStage] = list(cfg.stages)
+        self._current_idx: int = 0
+        self._episodes_in_stage: int = 0
+
+    # ------------------------------------------------------------------
+
+    @property
+    def current_stage(self) -> RewardCurriculumStage | None:
+        if not self.enabled:
+            return None
+        if 0 <= self._current_idx < len(self.stages):
+            return self.stages[self._current_idx]
+        return None
+
+    @property
+    def current_stage_name(self) -> str:
+        if not self.enabled:
+            return "default"
+        stage = self.current_stage
+        return str(stage.name) if stage is not None else "completed"
+
+    @property
+    def current_features(self) -> list[str]:
+        """Features active in the current stage (``["all"]`` if disabled)."""
+        stage = self.current_stage
+        if stage is None:
+            return ["all"]
+        return list(stage.features)
+
+    @property
+    def state(self) -> RewardCurriculumState:
+        return RewardCurriculumState(
+            stage_index=int(self._current_idx),
+            stage_name=str(self.current_stage_name),
+            episodes_in_stage=int(self._episodes_in_stage),
+            total_stages=int(len(self.stages)),
+            enabled=bool(self.enabled),
+            features=list(self.current_features),
+        )
+
+    @property
+    def finished(self) -> bool:
+        if not self.enabled:
+            return False
+        return self._current_idx >= len(self.stages)
+
+    # ------------------------------------------------------------------
+
+    def advance(self, episodes_done_in_stage: int) -> bool:
+        """Bump the counter, flip stage when the per-stage budget is hit.
+
+        Returns ``True`` if the active stage changed. ``episodes=-1`` on
+        the current stage is treated as "stay forever" and prevents a flip.
+        """
+        if not self.enabled or self.finished:
+            return False
+        self._episodes_in_stage += max(0, int(episodes_done_in_stage))
+        stage = self.current_stage
+        if stage is None:
+            return False
+        budget = int(stage.episodes)
+        if budget < 0:
+            # Open-ended last stage -- never flip.
+            return False
+        if self._episodes_in_stage >= budget and budget > 0:
+            self._current_idx += 1
+            self._episodes_in_stage = 0
+            return True
+        return False
+
+    def reset(self) -> None:
+        self._current_idx = 0
+        self._episodes_in_stage = 0
+
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:

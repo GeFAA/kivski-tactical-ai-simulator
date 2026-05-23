@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response
 
+from kivski_api.policies import list_recommended_policies
 from kivski_api.session import REGISTRY
 
 router = APIRouter(prefix="/api/checkpoints", tags=["checkpoints"])
@@ -66,6 +67,18 @@ async def list_checkpoints() -> dict[str, Any]:
         if path.suffix.lower() in _VALID_EXTS and path.is_file():
             entries.append(_entry_for(path))
     return {"checkpoints": entries, "loaded": REGISTRY.loaded_checkpoint}
+
+
+@router.get("/recommended")
+async def recommended_policies() -> dict[str, Any]:
+    """A/B comparison-mode policy picker.
+
+    Returns the curated list of "interesting" opponents the user can pit
+    against each other in a live viewer match: deterministic baselines
+    (random / scripted_rush / scripted_hold) plus, when available,
+    ``latest`` and ``best`` checkpoint shortcuts.
+    """
+    return {"options": list_recommended_policies()}
 
 
 def _find_checkpoint(name: str) -> Path:

@@ -32,6 +32,12 @@ class SimulationConfig(_Frozen):
     tick_rate_hz: int = 10
     max_ticks_per_round: int = 900
     starting_money: int = 800
+    # Number of engine ticks per env.step(). Policy chooses once, the
+    # engine runs `frame_skip` inner ticks with the same action, rewards
+    # accumulate. 1 = no skip (live viewer); 4 = standard MARL frame-skip
+    # used by the training trainer to reduce variance and speed up
+    # convergence ~2-3x.
+    frame_skip: int = 1
 
 
 class EconomyConfig(_Frozen):
@@ -143,6 +149,33 @@ class RewardShapingConfig(_Frozen):
     map_control_per_tile: float = 0.0008
 
 
+class RewardCurriculumStage(_Frozen):
+    """Single stage of the reward curriculum -- which feature buckets are on.
+
+    ``features`` is a list of opt-in reward-shaping buckets. Special token
+    ``"all"`` enables every bucket. The trainer advances stages after the
+    cumulative episode threshold; ``episodes=-1`` means "forever from now".
+    """
+
+    name: str
+    episodes: int = 0  # -1 = open-ended (final stage)
+    features: list[str] = Field(default_factory=lambda: ["all"])
+
+
+class RewardCurriculumConfig(_Frozen):
+    """Sequential gating of reward-shaping buckets.
+
+    Stage 0 typically only enables ``kill`` + ``survive`` so agents learn
+    aggressive combat fast. Later stages layer plant/defuse and finally the
+    full set including economy / map control. Disabled by default for
+    backward compatibility with v0.2 -- set ``enabled: true`` in the YAML
+    (or in code) to opt in.
+    """
+
+    enabled: bool = False
+    stages: list[RewardCurriculumStage] = Field(default_factory=list)
+
+
 class TelemetryConfig(_Frozen):
     backend: str = "csv"
     log_every_episodes: int = 10
@@ -183,6 +216,7 @@ class KivskiConfig(_Frozen):
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     league: LeagueConfig = Field(default_factory=LeagueConfig)
     reward_shaping: RewardShapingConfig = Field(default_factory=RewardShapingConfig)
+    reward_curriculum: RewardCurriculumConfig = Field(default_factory=RewardCurriculumConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)

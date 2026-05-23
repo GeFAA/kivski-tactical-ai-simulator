@@ -17,6 +17,10 @@ simulation:
   tick_rate_hz: 10            # logical sim ticks per second
   max_ticks_per_round: 900    # safety cap
   starting_money: 800
+  # MARL frame-skip: policy acts every N engine ticks, action is repeated
+  # for the other N-1. 1 = no skip (live viewer). 4 = standard training
+  # value, reduces exploration variance and yields ~2-3x faster convergence.
+  frame_skip: 1
 
 economy:
   reward_round_win: 3250
@@ -107,6 +111,16 @@ reward_shaping:
   useful_trade: 0.15
   pointless_death: -0.20
   map_control_per_tile: 0.0008
+
+# Reward curriculum: sequentially unlock reward-shaping buckets so agents
+# learn aggression first, then objectives, then full economy. Disabled by
+# default for v0.2 backward compatibility. Set `enabled: true` to opt in.
+reward_curriculum:
+  enabled: false
+  stages:
+    - { name: "killshoot",  episodes: 5000,  features: ["kill", "survive", "damage_dealt"] }
+    - { name: "objective",  episodes: 15000, features: ["kill", "survive", "damage_dealt", "bomb_plant", "bomb_defuse"] }
+    - { name: "full",       episodes: -1,    features: ["all"] }
 
 telemetry:
   backend: csv               # csv | wandb | tensorboard | all

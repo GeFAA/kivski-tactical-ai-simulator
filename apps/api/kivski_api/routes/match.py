@@ -56,8 +56,13 @@ async def new_match(body: NewMatchBody) -> dict[str, Any]:
         "match_id": session.id,
         "map": body.map,
         "seed": body.seed,
+        # Echo back the *requested* names plus the *resolved* adapter names so
+        # the frontend can render the auto-defaults ("None" -> "checkpoint:foo")
+        # without having to re-query the registry.
         "policy_yellow": body.policy_yellow,
         "policy_blue": body.policy_blue,
+        "policy_yellow_name": session.policy_yellow_name,
+        "policy_blue_name": session.policy_blue_name,
         "paused": session.paused,
     }
 
@@ -103,6 +108,8 @@ async def get_snapshot(match_id: str) -> dict[str, Any]:
         "paused": session.paused,
         "speed": session.speed,
         "selected_agent": session.selected_agent,
+        "policy_yellow_name": session.policy_yellow_name,
+        "policy_blue_name": session.policy_blue_name,
         "data": session.engine.snapshot().to_json_dict(),
     }
 

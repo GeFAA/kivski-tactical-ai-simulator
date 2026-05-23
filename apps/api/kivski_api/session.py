@@ -34,7 +34,13 @@ from kivski_sim.engine import Engine
 from kivski_sim.map_loader import MapData, load_map
 from kivski_sim.utils import now_unix
 
-from kivski_api.policies import PolicyAdapter, load_policy
+from kivski_api.policies import (
+    PolicyAdapter,
+    RandomPolicy,
+    latest_checkpoint_path,
+    load_latest_checkpoint_policy,
+    load_policy,
+)
 
 if TYPE_CHECKING:  # avoid the heavy fastapi import at module import time
     from fastapi import WebSocket
@@ -124,8 +130,11 @@ class MatchSession:
     paused: bool = False
     speed: float = 1.0
     subscribers: set[WebSocket] = field(default_factory=set)
-    policy_yellow: PolicyAdapter = field(default_factory=load_policy)
-    policy_blue: PolicyAdapter = field(default_factory=load_policy)
+    policy_yellow: PolicyAdapter = field(default_factory=RandomPolicy)
+    policy_blue: PolicyAdapter = field(default_factory=RandomPolicy)
+    # Human-readable identifiers for the API + UI. Filled in by
+    # :meth:`SessionRegistry.create_match` based on the resolved adapter so
+    # the live header can render e.g. "Yellow: checkpoint:main_ep_12000".
     policy_yellow_name: str | None = None
     policy_blue_name: str | None = None
     selected_agent: int | None = None
@@ -367,18 +376,50 @@ class SessionRegistry:
         engine = Engine(config=cfg, map_data=map_data, seed=seed)
         engine.reset()
         match_id = uuid.uuid4().hex[:12]
+
+        # Auto-checkpoint behaviour: when neither side is explicitly named we
+        # default *both* to the latest checkpoint (or fall back to random when
+        # no checkpoint exists). Without this the live viewer would always
+        # show two RandomPolicy adapters even after days of training -- the
+        # exact bug v0.3.0 set out to fix.
+        auto_default = policy_yellow is None and policy_blue is None
+        if auto_default:
+            ckpt = latest_checkpoint_path()
+            if ckpt is not None:
+                default_spec: str | None = "latest"
+            else:
+                default_spec = "random"
+                _LOG.warning(
+                    "create_match: no checkpoint available, defaulting both sides to random"
+                )
+            yellow_spec = default_spec
+            blue_spec = default_spec
+        else:
+            yellow_spec = policy_yellow
+            blue_spec = policy_blue
+
+        adapter_y = load_policy(yellow_spec)
+        adapter_b = load_policy(blue_spec)
+
         session = MatchSession(
             id=match_id,
             engine=engine,
             map_data=map_data,
             cfg=cfg,
-            policy_yellow=load_policy(policy_yellow),
-            policy_blue=load_policy(policy_blue),
-            policy_yellow_name=policy_yellow,
-            policy_blue_name=policy_blue,
+            policy_yellow=adapter_y,
+            policy_blue=adapter_b,
+            policy_yellow_name=str(getattr(adapter_y, "name", yellow_spec or "random")),
+            policy_blue_name=str(getattr(adapter_b, "name", blue_spec or "random")),
         )
         self.sessions[match_id] = session
-        _LOG.info("Created match %s (map=%s, seed=%s)", match_id, map_name, seed)
+        _LOG.info(
+            "Created match %s (map=%s, seed=%s, yellow=%s, blue=%s)",
+            match_id,
+            map_name,
+            seed,
+            session.policy_yellow_name,
+            session.policy_blue_name,
+        )
         return session
 
     def get_match(self, match_id: str) -> MatchSession | None:
