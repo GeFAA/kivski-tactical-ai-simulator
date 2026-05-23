@@ -180,7 +180,14 @@ const TrainingPanel = () => {
     setError(null);
     const r = await postCommand(body);
     setBusy(null);
-    if (!r.ok) setError(`${label}: ${r.error}`);
+    if (!r.ok) {
+      setError(`${label}: ${r.error}`);
+    } else if (r.alreadyRunning) {
+      // 409 was gracefully absorbed; show a non-error hint that the
+      // job was already running so the user understands the no-op.
+      setError(`${label}: already running (no-op)`);
+      window.setTimeout(() => setError(null), 1_500);
+    }
   };
 
   const statusLabel = useMemo(() => {

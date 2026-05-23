@@ -256,12 +256,41 @@ export function getCurrentMatchId(): string | null {
   return _currentMatchId;
 }
 
-type CommandResult = { ok: true } | { ok: false; error: string };
+type CommandResult =
+  | { ok: true; alreadyRunning?: boolean; detail?: string }
+  | { ok: false; error: string };
 
 /** Common error wrapper around `fetch` so each branch in `postCommand` is one line. */
 async function postOrError(url: string, init?: RequestInit): Promise<CommandResult> {
   try {
     const res = await fetch(url, init);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { ok: false, error: `${res.status} ${res.statusText}: ${body.slice(0, 200)}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Variant of `postOrError` that treats HTTP 409 ("already running") as a
+ * graceful no-op rather than an error. Used by the training-start
+ * branches so a double-click on the Start button doesn't surface a
+ * scary error toast — the second POST simply reports
+ * `{ok: true, alreadyRunning: true}` and the UI carries on.
+ */
+async function postOrError409Graceful(
+  url: string,
+  init?: RequestInit,
+): Promise<CommandResult> {
+  try {
+    const res = await fetch(url, init);
+    if (res.status === 409) {
+      const body = await res.text().catch(() => "");
+      return { ok: true, alreadyRunning: true, detail: body.slice(0, 200) };
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       return { ok: false, error: `${res.status} ${res.statusText}: ${body.slice(0, 200)}` };
@@ -328,7 +357,7 @@ export async function postCommand(cmd: Command): Promise<CommandResult> {
         episodes: null,
         checkpoint: null,
       };
-      return postOrError(`${API_BASE}/training/start`, {
+      return postOrError409Graceful(`${API_BASE}/training/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -343,7 +372,7 @@ export async function postCommand(cmd: Command): Promise<CommandResult> {
         episodes: Math.max(1, Math.floor(cmd.n)),
         checkpoint: null,
       };
-      return postOrError(`${API_BASE}/training/start`, {
+      return postOrError409Graceful(`${API_BASE}/training/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -406,15 +435,43 @@ export interface CreateMatchResult {
 /**
  * Create a new match session on the backend and return its descriptor.
  * Every WebSocket subscription targets the resulting `match_id`.
+ *
+ * The optional `signal` allows callers (notably `subscribeMatch` running
+ * under React StrictMode's mount → cleanup → mount cycle) to cancel an
+ * in-flight create handshake when the surrounding effect tears down.
+ * Without this the StrictMode dance would silently create two matches.
  */
-export async function createMatch(body: CreateMatchBody = {}): Promise<CreateMatchResult> {
+export async function createMatch(
+  body: CreateMatchBody = {},
+  signal?: AbortSignal,
+): Promise<CreateMatchResult> {
   const payload: CreateMatchBody = { map: "dustline", ...body };
   const res = await fetch(`${API_BASE}/match/new`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   });
   return jsonOrThrow<CreateMatchResult>(res);
+}
+
+/**
+ * Fire-and-forget delete used to clean up a match that was created by
+ * an aborted `subscribeMatch` handshake (StrictMode unmount before the
+ * POST response arrived). Failures are intentionally swallowed — at
+ * worst the match lingers until the backend's GC sweeps it.
+ */
+function fireAndForgetDeleteMatch(matchId: string): void {
+  try {
+    void fetch(`${API_BASE}/match/${encodeURIComponent(matchId)}`, {
+      method: "DELETE",
+      keepalive: true,
+    }).catch(() => {
+      /* ignore */
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 // ---------- WebSocket ----------
@@ -606,6 +663,10 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
   let matchId: string | null = null;
   let mapName = createBody.map ?? "dustline";
   let needsFreshMatch = forcedUrl === null;
+  // AbortController for the in-flight create-match POST. close() aborts
+  // it so React StrictMode's mount → cleanup → mount cycle can't leak a
+  // second match.
+  let pendingCreateAbort: AbortController | null = null;
 
   const status = (s: "connecting" | "open" | "closed" | "error") => {
     opts.onStatus?.(s);
@@ -615,8 +676,17 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
   const ensureMatch = async (): Promise<string | null> => {
     if (forcedUrl) return null;
     if (matchId !== null && !needsFreshMatch) return matchId;
+    pendingCreateAbort = new AbortController();
+    const signal = pendingCreateAbort.signal;
     try {
-      const res = await createMatch(createBody);
+      const res = await createMatch(createBody, signal);
+      // If close() fired while the POST was in flight, the match was
+      // still created server-side. Reap it before bailing out so we
+      // don't leak orphaned sessions.
+      if (closed) {
+        fireAndForgetDeleteMatch(res.match_id);
+        return null;
+      }
       matchId = res.match_id;
       if (res.map) mapName = res.map;
       needsFreshMatch = false;
@@ -636,10 +706,18 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
       console.warn("[kivski] created match", matchId, "on", mapName);
       return matchId;
     } catch (err) {
+      // AbortError is the expected outcome when close() ran while the
+      // POST was pending (StrictMode cleanup) — stay quiet so the
+      // console only carries genuine failures.
+      if ((err as { name?: string })?.name === "AbortError") {
+        return null;
+      }
 
       console.warn("[kivski] match create failed:", err);
       status("error");
       return null;
+    } finally {
+      pendingCreateAbort = null;
     }
   };
 
@@ -740,6 +818,18 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      // Cancel any in-flight create-match POST. If the server already
+      // accepted the request before we abort, ensureMatch()'s
+      // post-await `closed` check will fire-and-forget DELETE the
+      // resulting match so we don't leak it.
+      if (pendingCreateAbort) {
+        try {
+          pendingCreateAbort.abort();
+        } catch {
+          /* ignore */
+        }
+        pendingCreateAbort = null;
+      }
       if (ws) {
         try {
           ws.close();
@@ -747,6 +837,14 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
           /* ignore */
         }
         ws = null;
+      }
+      // If a match id was already negotiated (the POST resolved before
+      // close() ran) but we haven't actually started consuming it,
+      // delete it server-side. Best-effort: the backend has a TTL sweep
+      // for orphaned matches so a transient failure here is harmless.
+      if (matchId !== null) {
+        fireAndForgetDeleteMatch(matchId);
+        matchId = null;
       }
       // Clear the id so any post-close postCommand fails fast with
       // "no active match" instead of POST-ing to a stale URL.

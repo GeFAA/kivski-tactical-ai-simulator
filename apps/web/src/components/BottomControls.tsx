@@ -11,6 +11,11 @@ const BottomControls = () => {
   const speed = useStore((s) => s.speed);
   const setSpeed = useStore((s) => s.setSpeed);
   const round = useStore((s) => s.round);
+  // Mirrors /api/training/status — used to disable the Start button
+  // while a job is in flight so a double-click can't even attempt the
+  // POST. Belt-and-braces alongside the api-client's 409-graceful
+  // handling.
+  const trainingRunning = useStore((s) => s.trainingStatus.running);
 
   const [episodeCount, setEpisodeCount] = useState(10);
   const [checkpoints, setCheckpoints] = useState<CheckpointInfo[]>([]);
@@ -42,7 +47,14 @@ const BottomControls = () => {
     setLastError(null);
     const r = await postCommand(body);
     setBusy(null);
-    if (!r.ok) setLastError(`${label}: ${r.error}`);
+    if (!r.ok) {
+      setLastError(`${label}: ${r.error}`);
+    } else if (r.alreadyRunning) {
+      // 409 was gracefully absorbed by the api-client; flash an
+      // informational note rather than a scary error toast.
+      setLastError(`${label}: already running (no-op)`);
+      window.setTimeout(() => setLastError(null), 1_500);
+    }
   };
 
   const onPlayPause = async () => {
@@ -133,7 +145,8 @@ const BottomControls = () => {
           type="button"
           className="btn btn-primary"
           onClick={() => send("start training", { type: "start_training" })}
-          disabled={busy !== null}
+          disabled={busy !== null || trainingRunning}
+          title={trainingRunning ? "A training job is already running" : undefined}
         >
           Start Training
         </button>
@@ -141,7 +154,7 @@ const BottomControls = () => {
           type="button"
           className="btn btn-danger"
           onClick={() => send("stop training", { type: "stop_training" })}
-          disabled={busy !== null}
+          disabled={busy !== null || !trainingRunning}
         >
           Stop
         </button>
