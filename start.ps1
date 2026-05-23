@@ -102,9 +102,32 @@ New-Item -ItemType File -Force -Path $frontendLog | Out-Null
 
 Write-Host "[*] Frontend (Vite Dev-Server) -> Port $FrontendPort" -ForegroundColor Green
 $env:VITE_API_PROXY_TARGET = "http://127.0.0.1:$BackendPort"
-$frontendProc = Start-Process -FilePath "npm.cmd" `
-    -ArgumentList @("run", "dev", "--", "--port", "$FrontendPort") `
-    -WorkingDirectory $root `
+
+$webDir = Join-Path $root "apps\web"
+# Vite wird bei npm-workspaces ins Root node_modules gehoisted.
+$viteCandidates = @(
+    (Join-Path $root  "node_modules\.bin\vite.cmd"),
+    (Join-Path $webDir "node_modules\.bin\vite.cmd")
+)
+$viteBin = $viteCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $viteBin) {
+    Write-Host "[!] Vite Binary nicht gefunden. Versuche 'npm install' ..." -ForegroundColor Yellow
+    npm install | Out-Host
+    $viteBin = $viteCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $viteBin) {
+        Write-Host "[X] Vite konnte nicht installiert werden. Geprueft:" -ForegroundColor Red
+        $viteCandidates | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+        Stop-Process -Id $backendProc.Id -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+}
+Write-Host "    Vite Binary: $viteBin" -ForegroundColor DarkGray
+
+# Vite direkt aufrufen (umgeht npm-workspace --port arg-parsing bug)
+$frontendProc = Start-Process -FilePath $viteBin `
+    -ArgumentList @("--port", "$FrontendPort", "--host", "127.0.0.1", "--strictPort") `
+    -WorkingDirectory $webDir `
     -RedirectStandardOutput $frontendLog `
     -RedirectStandardError "$frontendLog.err" `
     -WindowStyle Hidden `
