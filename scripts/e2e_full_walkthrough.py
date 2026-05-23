@@ -15,6 +15,7 @@ Exit code: 0 if every assertion holds, 1 otherwise.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import sys
@@ -60,9 +61,7 @@ def _is_tolerated_failure(resp: dict) -> bool:
     status = resp.get("status", 0)
     # The /api/training/configs endpoint can 404 on older backends; we
     # don't care for this walkthrough.
-    if url.endswith("/api/training/configs") and status == 404:
-        return True
-    return False
+    return bool(url.endswith("/api/training/configs") and status == 404)
 
 
 # ----------------------------------------------------------------------------
@@ -118,9 +117,7 @@ async def _run(headless: bool = True) -> int:
                 pass
 
         def _record_ws(data, url: str) -> None:
-            payload = (
-                data if isinstance(data, str) else data.decode("utf-8", errors="replace")
-            )
+            payload = data if isinstance(data, str) else data.decode("utf-8", errors="replace")
             ws_frames_received.append({"url": url, "payload": payload[:2048]})
 
         def on_ws(ws):  # type: ignore[no-untyped-def]
@@ -152,17 +149,16 @@ async def _run(headless: bool = True) -> int:
             return page.locator("button", has_text=text).first
 
         # Wait for snapshot frames to arrive
-        async def _wait_for_snapshot_with_field(
-            field_check, timeout_ms: int = 5_000
-        ):
+        async def _wait_for_snapshot_with_field(field_check, timeout_ms: int = 5_000):
             """Wait for a snapshot frame whose payload matches a JSON criterion."""
             start = time.time()
             while (time.time() - start) * 1000 < timeout_ms:
                 for f in reversed(ws_frames_received):
                     payload = f.get("payload", "")
-                    if '"type":"snapshot"' in payload or '"type": "snapshot"' in payload:
-                        if field_check(payload):
-                            return True
+                    if (
+                        '"type":"snapshot"' in payload or '"type": "snapshot"' in payload
+                    ) and field_check(payload):
+                        return True
                 await page.wait_for_timeout(150)
             return False
 
@@ -204,9 +200,7 @@ async def _run(headless: bool = True) -> int:
         shot = await _shoot(page, 4, "speed_2x")
         # Backend POSTs /api/match/{id}/speed?multiplier=2; check no failed
         # responses for this URL.
-        speed2_fails = [
-            r for r in failed_responses if "/speed" in r["url"] and r["status"] >= 400
-        ]
+        speed2_fails = [r for r in failed_responses if "/speed" in r["url"] and r["status"] >= 400]
         _add_step(
             report,
             4,
@@ -220,9 +214,7 @@ async def _run(headless: bool = True) -> int:
         await btn("4x").click()
         await page.wait_for_timeout(800)
         shot = await _shoot(page, 5, "speed_4x")
-        speed4_fails = [
-            r for r in failed_responses if "/speed" in r["url"] and r["status"] >= 400
-        ]
+        speed4_fails = [r for r in failed_responses if "/speed" in r["url"] and r["status"] >= 400]
         _add_step(
             report,
             5,
@@ -240,9 +232,7 @@ async def _run(headless: bool = True) -> int:
         await btn("Reset Match").click()
         await page.wait_for_timeout(1_500)
         shot = await _shoot(page, 6, "reset_match")
-        reset_fails = [
-            r for r in failed_responses if "/reset" in r["url"] and r["status"] >= 400
-        ]
+        reset_fails = [r for r in failed_responses if "/reset" in r["url"] and r["status"] >= 400]
         _add_step(
             report,
             6,
@@ -269,7 +259,7 @@ async def _run(headless: bool = True) -> int:
 
         # -------------------- STEP 8: Pick yellow=scripted_rush, blue=random --------------------
         # Two <select>s inside the modal. The yellow one is first.
-        selects = page.locator(".panel select")
+        page.locator(".panel select")
         # We want the selects inside the modal — locate them under the modal body
         modal_selects = page.locator(".bg-black\\/60 select")
         yellow_picker = modal_selects.nth(0)
@@ -292,9 +282,7 @@ async def _run(headless: bool = True) -> int:
         shot = await _shoot(page, 8, "comparison_match_created")
         match_after = len(set(created_match_ids))
         new_match_post_failures = [
-            r
-            for r in failed_responses
-            if r["url"].endswith("/api/match/new") and r["status"] >= 400
+            r for r in failed_responses if r["url"].endswith("/api/match/new") and r["status"] >= 400
         ]
         _add_step(
             report,
@@ -375,32 +363,24 @@ async def _run(headless: bool = True) -> int:
         # The handler will call postCommand → postOrError409Graceful →
         # ok:true,alreadyRunning:true. The transient "(no-op)" hint
         # appears in the status line for ~1.5s.
-        try:
+        with contextlib.suppress(Exception):
             await bc_start.click(force=True, timeout=2_000)
-        except Exception:
-            pass
         await page.wait_for_timeout(2_500)
         recent_409 = [
-            r
-            for r in failed_responses
-            if r["status"] == 409 and r["url"].endswith("/api/training/start")
+            r for r in failed_responses if r["status"] == 409 and r["url"].endswith("/api/training/start")
         ]
         # The acceptance criterion: api_test got 409 back from the backend
         # (proving the duplicate was rejected at the network layer), but
         # no `console.error` / no pageerror was emitted (proving the
         # api-client absorbed it gracefully).
         scary_errors = [
-            e
-            for e in page_errors + console_errors
-            if "Failed to load resource" not in e and "409" in e
+            e for e in page_errors + console_errors if "Failed to load resource" not in e and "409" in e
         ]
         # Also look for the "(no-op)" or "already running" friendly hint
         # the BottomControls renders. Either the hint or the absence of
         # an error toast is acceptable.
         body_text = await page.inner_text("body")
-        graceful_hint_visible = (
-            "(no-op)" in body_text or "already running" in body_text.lower()
-        )
+        graceful_hint_visible = "(no-op)" in body_text or "already running" in body_text.lower()
         _add_step(
             report,
             10,
@@ -415,10 +395,7 @@ async def _run(headless: bool = True) -> int:
             scary_console_errors=len(scary_errors),
             # Pass iff: backend really did 409 AND the app didn't emit a
             # console.error mentioning 409.
-            ok=(
-                api_test.get("status") == 409
-                and len(scary_errors) == 0
-            ),
+            ok=(api_test.get("status") == 409 and len(scary_errors) == 0),
         )
 
         # -------------------- STEP 11: Wait 30s for live training metrics --------------------
@@ -428,8 +405,7 @@ async def _run(headless: bool = True) -> int:
             metric_or_status = sum(
                 1
                 for f in ws_frames_received
-                if '"metrics_sample"' in f.get("payload", "")
-                or '"training_status"' in f.get("payload", "")
+                if '"metrics_sample"' in f.get("payload", "") or '"training_status"' in f.get("payload", "")
             )
             if metric_or_status > 0:
                 break
@@ -457,9 +433,7 @@ async def _run(headless: bool = True) -> int:
         except Exception:
             stop_disabled = False
         stop_fails = [
-            r
-            for r in failed_responses
-            if r["url"].endswith("/api/training/stop") and r["status"] >= 400
+            r for r in failed_responses if r["url"].endswith("/api/training/stop") and r["status"] >= 400
         ]
         # 404 ("no running training job") is acceptable; it means the
         # job already exited.
@@ -510,9 +484,7 @@ async def _run(headless: bool = True) -> int:
         await page.locator("button", has_text="Inspector").first.click()
         await page.wait_for_timeout(600)
         # "Select an agent on the map or sidebar to inspect." should appear
-        inspector_empty_visible = await page.locator(
-            "text=Select an agent"
-        ).first.is_visible()
+        inspector_empty_visible = await page.locator("text=Select an agent").first.is_visible()
         shot = await _shoot(page, 15, "inspector_tab")
         _add_step(
             report,
@@ -554,26 +526,20 @@ async def _run(headless: bool = True) -> int:
 
         # -------------------- STEP 17: console errors final check --------------------
         # Build the final report.
-        non_tolerated_failures = [
-            r for r in failed_responses if not _is_tolerated_failure(r)
-        ]
+        non_tolerated_failures = [r for r in failed_responses if not _is_tolerated_failure(r)]
         # 409 responses for /api/training/start are EXPECTED in this test
         # (step 10's force-click). The fix is "graceful handling", not
         # "no 409 at the wire level".
         non_tolerated_failures = [
             r
             for r in non_tolerated_failures
-            if not (
-                r["status"] == 409 and r["url"].endswith("/api/training/start")
-            )
+            if not (r["status"] == 409 and r["url"].endswith("/api/training/start"))
         ]
         # 404 on stop is acceptable (training already exited)
         non_tolerated_failures = [
             r
             for r in non_tolerated_failures
-            if not (
-                r["status"] == 404 and r["url"].endswith("/api/training/stop")
-            )
+            if not (r["status"] == 404 and r["url"].endswith("/api/training/stop"))
         ]
         distinct_match_ids = sorted(set(created_match_ids))
         # initial-load match-id count: collected during step 1 only.
@@ -588,11 +554,7 @@ async def _run(headless: bool = True) -> int:
         # deliberately triggers it to prove the api-client absorbs it.
         # Filter those out before judging "console_errors" as fatal.
         non_intrinsic_console_errors = [
-            e
-            for e in console_errors
-            if not (
-                "Failed to load resource" in e and "409" in e
-            )
+            e for e in console_errors if not ("Failed to load resource" in e and "409" in e)
         ]
 
         ok_total = (
@@ -635,10 +597,8 @@ async def _run(headless: bool = True) -> int:
             print(f"    err:  {e[:180]}")
 
         # Cleanup: make sure no training job is left running for the next run.
-        try:
+        with contextlib.suppress(Exception):
             await ctx.request.post("http://127.0.0.1:8000/api/training/stop")
-        except Exception:
-            pass
 
         await browser.close()
         return 0 if ok_total else 1

@@ -119,9 +119,7 @@ async def _run(headless: bool = True) -> int:
             },
             "bug2": {
                 **bug2_evidence,
-                "failed_responses_409": [
-                    r for r in failed_responses if r["status"] == 409
-                ],
+                "failed_responses_409": [r for r in failed_responses if r["status"] == 409],
                 "reproduced": any(r["status"] == 409 for r in failed_responses),
             },
             "all_failed_responses": failed_responses,
