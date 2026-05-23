@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
 import { useStore, selectSelectedAgent } from "@/lib/store";
 import { loadMap } from "@/lib/map-loader";
+import { clippedFovPolygon } from "@/lib/fov-clipping";
 import { PixiContext, type PixiContextValue } from "@/lib/pixi-context";
 import type {
   AgentSnapshot,
@@ -845,22 +846,47 @@ const updateBombOnMap = (
 
 const FOV_DEG = 144;
 const FOV_RADIUS = 30;
+/** Number of rays per cone — see `clippedFovPolygon` perf note. */
+const FOV_RAY_COUNT = 64;
 
-const drawFovCone = (layer: Container, agent: AgentSnapshot | null) => {
+/**
+ * Draw a wall-clipped FoV cone for the selected agent. The cone arc
+ * is sampled by ``FOV_RAY_COUNT`` rays which are each clipped against
+ * every sight-blocking wall / cover edge on the map, so the visual
+ * stops at obstacles instead of bleeding through them.
+ *
+ * Pure visual — the real engine LoS lives in
+ * ``packages/sim/kivski_sim/visibility.compute_fov`` and is unaffected.
+ */
+const drawFovCone = (
+  layer: Container,
+  agent: AgentSnapshot | null,
+  mapData: MapData | null,
+) => {
   layer.removeChildren();
-  if (!agent || !agent.isAlive) return;
+  if (!agent || !agent.isAlive || !mapData) return;
+
+  // Aggregate every sight-blocking obstacle. Both walls and cover
+  // pieces stop visibility in the backend's compute_fov, so we treat
+  // the union here. (If we ever introduce decorative walls without
+  // `blocks_sight`, filter on a per-shape flag instead.)
+  const obstacles = mapData.walls;
+
+  const color = sideColor(agent.side);
+  const poly = clippedFovPolygon(
+    agent.pos,
+    agent.facing,
+    (FOV_DEG * Math.PI) / 180,
+    FOV_RADIUS,
+    obstacles,
+    FOV_RAY_COUNT,
+  );
+  if (poly.length < 3) return;
+  const flat = poly.flatMap((p) => [p.x, p.y]);
+
   const g = new Graphics();
-  const half = (FOV_DEG * Math.PI) / 180 / 2;
-  const segments = 24;
-  const start = agent.facing - half;
-  const points: number[] = [agent.pos.x, agent.pos.y];
-  for (let i = 0; i <= segments; i++) {
-    const t = start + (i / segments) * 2 * half;
-    points.push(agent.pos.x + Math.cos(t) * FOV_RADIUS);
-    points.push(agent.pos.y + Math.sin(t) * FOV_RADIUS);
-  }
-  g.poly(points).fill({ color: COLORS.fovCone, alpha: 0.12 });
-  g.poly(points).stroke({ color: COLORS.fovCone, width: 0.15, alpha: 0.5 });
+  g.poly(flat).fill({ color, alpha: 0.12 });
+  g.poly(flat).stroke({ color, width: 0.15, alpha: 0.5 });
   layer.addChild(g);
 };
 
@@ -1106,6 +1132,10 @@ const MapViewer = () => {
   }, [mapName, selectAgent]);
 
   // FoV overlay (selected agent only). Lightweight enough to handle here.
+  // The cone is wall-clipped against `mapDataRef.current`; we read it
+  // fresh on every redraw so a late map load doesn't leave a stale
+  // closure. `mapName` is a dep so this re-runs when the map changes
+  // and the cone re-clips against the new walls.
   useEffect(() => {
     const app = appRef.current;
     const world = worldRef.current;
@@ -1117,11 +1147,15 @@ const MapViewer = () => {
       return;
     }
     const unsub = useStore.subscribe((state) => {
-      drawFovCone(layer, selectSelectedAgent(state));
+      drawFovCone(layer, selectSelectedAgent(state), mapDataRef.current);
     });
-    drawFovCone(layer, selectSelectedAgent(useStore.getState()));
+    drawFovCone(
+      layer,
+      selectSelectedAgent(useStore.getState()),
+      mapDataRef.current,
+    );
     return () => unsub();
-  }, [showFov, pixiReady]);
+  }, [showFov, pixiReady, mapName]);
 
   // Sound overlay — fades recent sound events.
   useEffect(() => {
