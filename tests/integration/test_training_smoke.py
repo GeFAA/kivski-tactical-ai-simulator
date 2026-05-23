@@ -12,8 +12,10 @@ hard-depends on it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -21,8 +23,19 @@ torch = pytest.importorskip("torch")
 
 from kivski_agents.metrics import EpisodeStats  # noqa: E402
 from kivski_agents.telemetry import NoOpSink  # noqa: E402
+from kivski_agents.training.auto_tune import (  # noqa: E402
+    detect_optimal_num_envs,
+    detect_optimal_workers,
+    envs_per_worker_split,
+)
 from kivski_agents.training.curriculum import CurriculumManager  # noqa: E402
+from kivski_agents.training.parallel_vec_env import (  # noqa: E402
+    SubprocVecEnv,
+    ThreadedVecEnv,
+    make_vec_env,
+)
 from kivski_agents.training.trainer import Trainer, TrainerConfig  # noqa: E402
+from kivski_agents.training.vec_env import VecEnvWrapper  # noqa: E402
 from kivski_sim.config import KivskiConfig  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -262,3 +275,130 @@ def test_trainer_full_iteration(tmp_path: Path) -> None:
     assert trainer.update_step == initial_update + 1
     assert trainer.env_steps > 0
     trainer.vec_env.close()
+
+
+# ---------------------------------------------------------------------------
+# Auto-tuning helpers
+# ---------------------------------------------------------------------------
+
+
+def test_auto_num_envs_returns_reasonable() -> None:
+    """``detect_optimal_num_envs`` should return >= 8 and respect overrides."""
+    n = detect_optimal_num_envs(None)
+    assert n >= 8
+    assert n <= 64
+    # Explicit request wins.
+    assert detect_optimal_num_envs(7) == 7
+    assert detect_optimal_num_envs(128) == 128
+    # Zero / negative requests fall back to auto-detection.
+    assert detect_optimal_num_envs(0) >= 8
+
+
+def test_auto_workers_returns_reasonable() -> None:
+    """``detect_optimal_workers`` should respect the env count cap."""
+    n = detect_optimal_workers(16)
+    assert 1 <= n <= 16
+    assert detect_optimal_workers(1) == 1
+    assert detect_optimal_workers(0) == 1
+
+
+def test_envs_per_worker_split_balanced() -> None:
+    """Split must sum to ``num_envs`` and be balanced within +/- 1."""
+    split = envs_per_worker_split(10, 3)
+    assert split == [4, 3, 3]
+    assert sum(envs_per_worker_split(7, 4)) == 7
+    assert sum(envs_per_worker_split(32, 8)) == 32
+
+
+# ---------------------------------------------------------------------------
+# Threaded vec env (cheap, always safe to run)
+# ---------------------------------------------------------------------------
+
+
+def test_threaded_vec_env_basic(tmp_path: Path) -> None:
+    """Reset + a few steps with the threaded backend should not crash and
+    should produce the same observation shapes as the sync wrapper."""
+    cfg = _smoke_cfg()
+    ve = ThreadedVecEnv(num_envs=4, cfg=cfg, map_name="dustline", base_seed=11, num_workers=2)
+    step = ve.reset()
+    assert set(step.observations.keys()) == set(ve.agent_names)
+    for arr in step.observations.values():
+        assert arr.shape == (4, ve.obs_dim)
+    # Build dummy actions and step a handful of times.
+    rng = np.random.default_rng(0)
+    actions = {
+        name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64) for name in ve.agent_names
+    }
+    for _ in range(5):
+        out = ve.step(actions)
+        for arr in out.observations.values():
+            assert arr.shape == (4, ve.obs_dim)
+            assert np.isfinite(arr).all()
+    ve.close()
+
+
+def test_make_vec_env_factory_sync_passthrough(tmp_path: Path) -> None:
+    """``make_vec_env`` with kind=sync should return the original wrapper."""
+    cfg = _smoke_cfg()
+    ve = make_vec_env(num_envs=2, cfg=cfg, map_name="dustline", base_seed=3, kind="sync")
+    assert isinstance(ve, VecEnvWrapper)
+    ve.close()
+
+
+def test_make_vec_env_invalid_kind_raises() -> None:
+    """Unknown ``kind`` values raise a clean ValueError, not a workers panic."""
+    cfg = _smoke_cfg()
+    with pytest.raises(ValueError):
+        make_vec_env(num_envs=2, cfg=cfg, map_name="dustline", base_seed=3, kind="nonsense")
+
+
+# ---------------------------------------------------------------------------
+# Subproc vec env (skipped on CI because Windows ``spawn`` is heavy and
+# multiprocessing-in-CI can deadlock under -p no:cacheprovider).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="multiprocessing.spawn can hang on CI runners; covered locally instead",
+)
+def test_subproc_vec_env_basic() -> None:
+    """Spawn 2 workers hosting 4 envs total; reset + step + close cleanly."""
+    cfg = _smoke_cfg()
+    ve = SubprocVecEnv(num_envs=4, cfg=cfg, map_name="dustline", base_seed=99, num_workers=2)
+    try:
+        step = ve.reset()
+        assert set(step.observations.keys()) == set(ve.agent_names)
+        for arr in step.observations.values():
+            assert arr.shape == (4, ve.obs_dim)
+        rng = np.random.default_rng(123)
+        actions = {
+            name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64)
+            for name in ve.agent_names
+        }
+        for _ in range(5):
+            out = ve.step(actions)
+            for arr in out.observations.values():
+                assert arr.shape == (4, ve.obs_dim)
+                assert np.isfinite(arr).all()
+    finally:
+        ve.close()
+
+
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="multiprocessing.spawn can hang on CI runners; covered locally instead",
+)
+def test_subproc_vec_env_fallback_to_sync(monkeypatch) -> None:
+    """If ``SubprocVecEnv`` raises during spawn, the factory must fall back."""
+    cfg = _smoke_cfg()
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated spawn failure")
+
+    monkeypatch.setattr(
+        "kivski_agents.training.parallel_vec_env.SubprocVecEnv.__init__", _boom, raising=True
+    )
+    ve = make_vec_env(num_envs=2, cfg=cfg, map_name="dustline", base_seed=7, kind="subproc")
+    assert isinstance(ve, VecEnvWrapper), f"expected VecEnvWrapper fallback, got {type(ve)}"
+    ve.close()

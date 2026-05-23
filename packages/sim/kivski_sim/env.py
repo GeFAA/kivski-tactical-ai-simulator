@@ -415,8 +415,11 @@ class KivskiParallelEnv(ParallelEnv):
         pre_match_outcome = self._engine.state.match_outcome
         pre_round_id = int(self._engine.state.round_id)
 
-        # 3) Drive the engine forward.
-        snap, engine_rewards, _engine_done = self._engine.step(engine_actions)
+        # 3) Drive the engine forward. ``light_snapshot=True`` skips the
+        # JSON-serialisable agent/event/message lists in the engine's
+        # return value -- the env wrapper reads engine.state directly so
+        # those fields are pure overhead during training.
+        snap, engine_rewards, _engine_done = self._engine.step(engine_actions, light_snapshot=True)
 
         # 4) Update the per-agent memory using the post-step snapshot.
         self._update_memory(snap)
@@ -540,14 +543,20 @@ class KivskiParallelEnv(ParallelEnv):
     # ------------------------------------------------------------------
 
     def _build_all_observations(self) -> dict[str, np.ndarray]:
-        snap = self._engine.snapshot()
+        # We previously called ``self._engine.snapshot()`` here and threaded
+        # it through ``_build_observation``. The observation builder, however,
+        # only ever reads from ``self._engine.state`` directly -- the snapshot
+        # was unused. Skipping the snapshot here saves an O(agents + events)
+        # serialisation per step, which is a meaningful chunk of training-time
+        # throughput at 32 envs.
         obs: dict[str, np.ndarray] = {}
         for name in self._possible_agents:
-            obs[name] = self._build_observation(name, snap)
+            obs[name] = self._build_observation(name, None)
         return obs
 
-    def _build_observation(self, agent: str, snap: Snapshot) -> np.ndarray:
+    def _build_observation(self, agent: str, snap: Snapshot | None) -> np.ndarray:
         """Pack the per-agent egocentric observation into a flat float32 vector."""
+        del snap  # reserved for callers that pass an explicit snapshot
         aid = agent_index(agent)
         self_state = self._engine.state.agents[aid]
         mem = self._memory[agent]

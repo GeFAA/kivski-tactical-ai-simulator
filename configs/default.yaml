@@ -62,7 +62,8 @@ ml:
   gumbel_temperature: 1.0
   ppo_clip: 0.2
   ppo_epochs: 4
-  minibatch_size: 1024
+  # Larger minibatch to match the bigger rollout batches produced by 32 envs.
+  minibatch_size: 2048
   learning_rate: 3.0e-4
   entropy_coef: 0.015
   value_coef: 0.5
@@ -71,7 +72,10 @@ ml:
   max_grad_norm: 0.5
 
 training:
-  num_envs: 16
+  # Default tuned for an 8-16 core workstation. CLI --auto-envs picks a
+  # CPU-derived value at startup; subprocess vec env scales this nearly
+  # linearly until ~32 envs on most hardware.
+  num_envs: 32
   rollout_steps: 256
   total_episodes: 50000
   checkpoint_every_episodes: 500

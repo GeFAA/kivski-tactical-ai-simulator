@@ -87,7 +87,8 @@ class MLConfig(_Frozen):
     gumbel_temperature: float = 1.0
     ppo_clip: float = 0.2
     ppo_epochs: int = 4
-    minibatch_size: int = 1024
+    # Sized to match the default 32 envs / 256 rollout steps batch.
+    minibatch_size: int = 2048
     learning_rate: float = 3.0e-4
     entropy_coef: float = 0.015
     value_coef: float = 0.5
@@ -110,7 +111,9 @@ class CurriculumConfig(_Frozen):
 
 
 class TrainingConfig(_Frozen):
-    num_envs: int = 16
+    # Default tuned for an 8-16 core box. The CLI's ``--auto-envs`` flag
+    # bumps this to ``max(8, min(64, cpu_count - 2))`` for the host.
+    num_envs: int = 32
     rollout_steps: int = 256
     total_episodes: int = 50000
     checkpoint_every_episodes: int = 500

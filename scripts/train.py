@@ -13,6 +13,7 @@ from pathlib import Path
 import typer
 from kivski_agents.run_naming import generate_run_name
 from kivski_agents.telemetry import make_sink
+from kivski_agents.training.auto_tune import detect_optimal_num_envs, detect_optimal_workers
 from kivski_agents.training.trainer import Trainer, TrainerConfig
 from kivski_sim.config import KivskiConfig, load_config
 
@@ -73,6 +74,21 @@ def train(
         "--telemetry",
         help='Telemetry backend: "csv" | "tensorboard" | "wandb" | "all" | "none".',
     ),
+    vec_kind: str = typer.Option(
+        "subproc",
+        "--vec-kind",
+        help='Vectorised env backend: "subproc" (multi-process, default), "thread", or "sync".',
+    ),
+    num_workers: int | None = typer.Option(
+        None,
+        "--num-workers",
+        help="Worker count for parallel vec env. Auto-detected from CPU count when omitted.",
+    ),
+    auto_envs: bool = typer.Option(
+        False,
+        "--auto-envs/--no-auto-envs",
+        help="Auto-detect num_envs from CPU count (default uses --num-envs or config).",
+    ),
 ) -> None:
     """Launch a full MAPPO training run."""
     cfg = load_config(config)
@@ -89,10 +105,27 @@ def train(
     sink_backend = backend if backend is not None else cfg.telemetry.backend
     sink = make_sink(sink_backend, Path("models/logs"), rn)
 
+    # Resolve num_envs:
+    # 1) explicit --num-envs always wins
+    # 2) --auto-envs forces CPU-based detection
+    # 3) otherwise fall back to config value
+    if num_envs is not None:
+        resolved_num_envs = int(num_envs)
+    elif auto_envs:
+        resolved_num_envs = detect_optimal_num_envs(None)
+    else:
+        resolved_num_envs = int(cfg.training.num_envs)
+
+    # Resolve num_workers for parallel backends.
+    if num_workers is None and vec_kind in ("subproc", "thread"):
+        resolved_num_workers: int | None = detect_optimal_workers(resolved_num_envs)
+    else:
+        resolved_num_workers = num_workers
+
     tcfg = TrainerConfig(
         total_episodes=int(episodes) if episodes is not None else int(cfg.training.total_episodes),
         rollout_steps=int(rollout_steps) if rollout_steps is not None else int(cfg.training.rollout_steps),
-        num_envs=int(num_envs) if num_envs is not None else int(cfg.training.num_envs),
+        num_envs=int(resolved_num_envs),
         checkpoint_every=int(cfg.training.checkpoint_every_episodes),
         eval_every=int(cfg.training.eval_every_episodes),
         snapshot_every=int(cfg.league.snapshot_every_episodes),
@@ -102,10 +135,13 @@ def train(
         map_name=map_name,
         resume_from=Path(resume) if resume else None,
         run_name=rn,
+        vec_kind=str(vec_kind),
+        num_workers=resolved_num_workers,
     )
 
     typer.echo(
-        f"[kivski-train] run={rn} device={torch_device} num_envs={tcfg.num_envs} "
+        f"[kivski-train] run={rn} device={torch_device} vec_kind={tcfg.vec_kind} "
+        f"num_envs={tcfg.num_envs} num_workers={tcfg.num_workers} "
         f"rollout_steps={tcfg.rollout_steps} total_episodes={tcfg.total_episodes}"
     )
     trainer = Trainer(cfg, tcfg, telemetry=sink)
@@ -127,6 +163,16 @@ def smoke(
     map_name: str = typer.Option("dustline", "--map", help="Map name."),
     device: str = typer.Option("cpu", "--device", help="Smoke runs on CPU by default."),
     run_name: str | None = typer.Option(None, "--run-name", help="Override run name."),
+    vec_kind: str = typer.Option(
+        "sync",
+        "--vec-kind",
+        help='Vectorised env backend: "sync" (default for smoke), "thread", or "subproc".',
+    ),
+    num_workers: int | None = typer.Option(
+        None,
+        "--num-workers",
+        help="Worker count for parallel vec env. Auto-detected from CPU count when omitted.",
+    ),
 ) -> None:
     """Tiny end-to-end verification run (~1 minute on CPU)."""
     cfg = load_config(config)
@@ -167,6 +213,10 @@ def smoke(
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     sink = make_sink("none", Path("models/logs"), rn)
 
+    resolved_workers = num_workers
+    if num_workers is None and vec_kind in ("subproc", "thread"):
+        resolved_workers = detect_optimal_workers(int(num_envs))
+
     tcfg = TrainerConfig(
         total_episodes=int(episodes),
         rollout_steps=int(rollout_steps),
@@ -182,10 +232,16 @@ def smoke(
         run_name=rn,
         eval_matches=1,
         print_every=1,
+        vec_kind=str(vec_kind),
+        num_workers=resolved_workers,
     )
 
+    import time as _time
+
+    t0 = _time.perf_counter()
     typer.echo(
-        f"[kivski-smoke] run={rn} device={torch_device} num_envs={tcfg.num_envs} "
+        f"[kivski-smoke] run={rn} device={torch_device} vec_kind={tcfg.vec_kind} "
+        f"num_envs={tcfg.num_envs} num_workers={tcfg.num_workers} "
         f"rollout_steps={tcfg.rollout_steps} target_episodes={tcfg.total_episodes}"
     )
     trainer = Trainer(cfg, tcfg, telemetry=sink)
@@ -194,9 +250,11 @@ def smoke(
     finally:
         with contextlib.suppress(Exception):
             sink.close()
+    elapsed = max(_time.perf_counter() - t0, 1e-9)
+    fps = float(trainer.env_steps) / float(elapsed)
     typer.echo(
         f"[kivski-smoke] DONE episodes={trainer.episode_count} updates={trainer.update_step} "
-        f"env_steps={trainer.env_steps}"
+        f"env_steps={trainer.env_steps} elapsed={elapsed:.2f}s fps={fps:.1f}"
     )
 
 

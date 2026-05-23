@@ -156,8 +156,13 @@ def test_noop_sink_no_errors() -> None:
 
 
 def test_make_sink_csv_returns_csv(tmp_path: Path) -> None:
+    # v0.2: `make_sink("csv")` returns a MultiSink wrapping CSVSink + JSONLSink
+    # because the live API broadcaster tails the JSONL feed (CSV stays for
+    # offline analytics).
     sink = make_sink("csv", tmp_path, "run-csv")
-    assert isinstance(sink, CSVSink)
+    assert isinstance(sink, MultiSink), f"expected MultiSink, got {type(sink).__name__}"
+    inner_types = {type(s) for s in sink.sinks}
+    assert CSVSink in inner_types, f"CSV not in {inner_types}"
     sink.close()
 
 
@@ -168,7 +173,9 @@ def test_make_sink_none_returns_noop(tmp_path: Path) -> None:
 
 def test_make_sink_is_case_insensitive(tmp_path: Path) -> None:
     sink = make_sink("CSV", tmp_path, "run-CSV")
-    assert isinstance(sink, CSVSink)
+    assert isinstance(sink, MultiSink)
+    inner_types = {type(s) for s in sink.sinks}
+    assert CSVSink in inner_types
     sink.close()
 
 

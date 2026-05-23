@@ -8,14 +8,26 @@ classes are exposed so tests and downstream consumers can inspect / mock
 individual pieces.
 """
 
+from kivski_agents.training.auto_tune import (
+    detect_optimal_num_envs,
+    detect_optimal_workers,
+)
 from kivski_agents.training.curriculum import CurriculumManager
 from kivski_agents.training.league import LeagueEntry, LeagueManager, OpponentSampler
+from kivski_agents.training.parallel_vec_env import (
+    SubprocVecEnv,
+    ThreadedVecEnv,
+    make_vec_env,
+)
 from kivski_agents.training.rollout_collector import RolloutCollector
 from kivski_agents.training.trainer import Trainer, TrainerConfig
 from kivski_agents.training.vec_env import VecEnvWrapper
 
 __all__ = [
     "VecEnvWrapper",
+    "ThreadedVecEnv",
+    "SubprocVecEnv",
+    "make_vec_env",
     "RolloutCollector",
     "LeagueManager",
     "LeagueEntry",
@@ -23,4 +35,6 @@ __all__ = [
     "CurriculumManager",
     "Trainer",
     "TrainerConfig",
+    "detect_optimal_num_envs",
+    "detect_optimal_workers",
 ]

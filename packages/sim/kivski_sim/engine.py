@@ -263,19 +263,31 @@ class Engine:
     def step(
         self,
         actions: dict[AgentId, ActionBundle] | dict[int, ActionBundle],
+        *,
+        light_snapshot: bool = False,
     ) -> tuple[Snapshot, dict[AgentId, float], bool]:
         """Advance the simulation by one tick.
 
         Returns ``(snapshot, rewards, done)`` where:
 
-        * ``snapshot`` is the post-step :class:`Snapshot`.
+        * ``snapshot`` is the post-step :class:`Snapshot` -- or a *light*
+          snapshot when ``light_snapshot=True`` (training mode). The light
+          snapshot omits the agent/bomb/event list serialisation that the
+          PixiJS viewer needs, which is a measurable chunk of CPU at 32+
+          parallel envs. The training loop uses
+          :attr:`Engine.state` directly so it does not need the heavy
+          serialisation.
         * ``rewards`` is a dict ``agent_id -> float`` (round-win/loss + simple
           shaping for damage). This is the *dense* reward used by training.
         * ``done`` is True when the match has ended (``MatchOutcome != NONE``).
         """
         if self._state.match_outcome != MatchOutcome.NONE:
             # Match already done -- return current snapshot with no rewards.
-            return self.snapshot(), self._zero_reward_dict(), True
+            return (
+                self._light_snapshot() if light_snapshot else self.snapshot(),
+                self._zero_reward_dict(),
+                True,
+            )
 
         # 1) Normalise + record actions.
         normalised = self._normalise_actions(actions)
@@ -317,7 +329,7 @@ class Engine:
         self._state.sounds = list(self._tick_sounds)
         self._state.messages = list(self._tick_messages)
 
-        snap = self.snapshot()
+        snap = self._light_snapshot() if light_snapshot else self.snapshot()
         done = self._state.match_outcome != MatchOutcome.NONE
         if round_just_ended and self._replay_writer is not None and not done:
             self._replay_writer.write_event(
@@ -328,6 +340,37 @@ class Engine:
                 )
             )
         return snap, rewards, done
+
+    # ------------------------------------------------------------------
+    # Lightweight snapshot used by training callers
+    # ------------------------------------------------------------------
+
+    def _light_snapshot(self) -> Snapshot:
+        """Return a :class:`Snapshot` skeleton with only the cheap fields.
+
+        Training never reads the agent/event/message/sound lists out of the
+        return value (it accesses :attr:`Engine.state` directly), so packing
+        them is pure waste at training time. The fields the viewer needs
+        (``tick``, ``round_id``, ``phase``, scores, bomb phase) are still
+        populated so loggers / progress prints keep working.
+        """
+        s = self._state
+        return Snapshot(
+            tick=int(s.tick),
+            round_id=int(s.round_id),
+            phase=s.phase,
+            bomb_phase=s.bomb.phase,
+            yellow_score=int(s.teams[Team.YELLOW].score) if Team.YELLOW in s.teams else 0,
+            blue_score=int(s.teams[Team.BLUE].score) if Team.BLUE in s.teams else 0,
+            seconds_left=float(s.phase_ticks_remaining) * self._engine_cfg.dt,
+            plant_progress=float(s.bomb.plant_progress),
+            defuse_progress=float(s.bomb.defuse_progress),
+            agents=[],
+            bomb={},
+            events=[],
+            messages=[],
+            sounds=[],
+        )
 
     def snapshot(self) -> Snapshot:
         """Build a fresh :class:`Snapshot` from the current state."""

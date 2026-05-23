@@ -49,8 +49,16 @@ from kivski_agents.policy_runner import PolicyBundle, PolicyRunner
 from kivski_agents.telemetry import NoOpSink, TelemetrySink
 from kivski_agents.training.curriculum import CurriculumManager
 from kivski_agents.training.league import LeagueManager
+from kivski_agents.training.parallel_vec_env import (
+    SubprocVecEnv,
+    ThreadedVecEnv,
+    make_vec_env,
+)
 from kivski_agents.training.rollout_collector import RolloutCollector
 from kivski_agents.training.vec_env import VecEnvWrapper
+
+# Type alias covering every vec-env backend we ship.
+AnyVecEnv = VecEnvWrapper | ThreadedVecEnv | SubprocVecEnv
 
 __all__ = ["TrainerConfig", "Trainer"]
 
@@ -81,6 +89,13 @@ class TrainerConfig:
     eval_matches: int = 5
     # How often to print a console summary in addition to telemetry.
     print_every: int = 1
+    # Vectorised env backend: "sync" | "thread" | "subproc". The sync backend
+    # is the historical default and the most predictable for debugging; the
+    # parallel backends gain real throughput once num_envs > a few.
+    vec_kind: str = "sync"
+    # Number of worker threads/processes for the parallel backends. None ->
+    # detected from CPU count at construction time.
+    num_workers: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -110,12 +125,17 @@ class Trainer:
         self.curriculum: CurriculumManager = CurriculumManager(cfg)
         self.active_cfg: KivskiConfig = self._cfg_with_safety_overrides(self.curriculum.current_config())
 
-        # 2) Vec env.
-        self.vec_env: VecEnvWrapper = VecEnvWrapper(
+        # 2) Vec env. ``make_vec_env`` honours ``tcfg.vec_kind`` and falls
+        # back to the synchronous wrapper if the parallel backend can't
+        # start (e.g. on a Windows host where ``spawn`` failed to pickle
+        # something).
+        self.vec_env: AnyVecEnv = make_vec_env(
             num_envs=int(tcfg.num_envs),
             cfg=self.active_cfg,
             map_name=tcfg.map_name,
             base_seed=int(self.active_cfg.seed) + 1_000_000,
+            kind=str(tcfg.vec_kind),
+            num_workers=tcfg.num_workers,
         )
         # 3) Model + trainer.
         team_size = int(self.active_cfg.simulation.team_size)
@@ -512,21 +532,25 @@ class Trainer:
         if old_team_size == new_team_size:
             # Just re-create the vec env so the new sim settings take effect.
             self.vec_env.close()
-            self.vec_env = VecEnvWrapper(
+            self.vec_env = make_vec_env(
                 num_envs=int(self.tcfg.num_envs),
                 cfg=self.active_cfg,
                 map_name=self.tcfg.map_name,
                 base_seed=int(self.active_cfg.seed) + 1_000_000 + self.update_step,
+                kind=str(self.tcfg.vec_kind),
+                num_workers=self.tcfg.num_workers,
             )
             return
 
         # Team size changed -> rebuild everything that depends on it.
         self.vec_env.close()
-        self.vec_env = VecEnvWrapper(
+        self.vec_env = make_vec_env(
             num_envs=int(self.tcfg.num_envs),
             cfg=self.active_cfg,
             map_name=self.tcfg.map_name,
             base_seed=int(self.active_cfg.seed) + 1_000_000 + self.update_step,
+            kind=str(self.tcfg.vec_kind),
+            num_workers=self.tcfg.num_workers,
         )
         team_size = new_team_size
         obs_dim = int(self.vec_env.obs_dim)
@@ -587,6 +611,8 @@ class Trainer:
             "num_envs": int(self.tcfg.num_envs),
             "rollout_steps": int(self.tcfg.rollout_steps),
             "total_episodes": int(self.tcfg.total_episodes),
+            "vec_kind": str(self.tcfg.vec_kind),
+            "num_workers": int(self.tcfg.num_workers) if self.tcfg.num_workers else 0,
             "team_size": int(sim.team_size),
             "max_rounds": int(sim.max_rounds),
             "tick_rate_hz": int(sim.tick_rate_hz),
