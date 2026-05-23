@@ -14,8 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 from playwright.async_api import Page, async_playwright
@@ -70,11 +70,7 @@ async def _run(headless: bool = True) -> int:
         page.on("pageerror", lambda exc: page_errors.append(str(exc)))
         page.on(
             "console",
-            lambda msg: (
-                page_errors.append(f"console.error: {msg.text}")
-                if msg.type == "error"
-                else None
-            ),
+            lambda msg: page_errors.append(f"console.error: {msg.text}") if msg.type == "error" else None,
         )
 
         await page.goto(FRONTEND_URL, wait_until="domcontentloaded", timeout=15_000)
