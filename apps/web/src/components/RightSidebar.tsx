@@ -4,12 +4,14 @@ import type { EventItem } from "@/lib/types";
 import { OBSERVATION_SCHEMA } from "@/lib/event-icons";
 import CommsTab from "@/components/CommsTab";
 import MetricsPanel from "@/components/MetricsPanel";
+import SystemInfo from "@/components/SystemInfo";
 
 const tabs: { id: RightTab; label: string }[] = [
   { id: "events", label: "Events" },
   { id: "inspector", label: "Inspector" },
   { id: "comms", label: "Comms" },
   { id: "metrics", label: "Metrics" },
+  { id: "sys", label: "Sys" },
 ];
 
 // ---------- Event Feed ----------
@@ -343,6 +345,7 @@ const RightSidebar = () => {
         {tab === "inspector" && <AgentInspector />}
         {tab === "comms" && <CommsTab />}
         {tab === "metrics" && <MetricsPanel />}
+        {tab === "sys" && <SystemInfo />}
       </div>
     </aside>
   );

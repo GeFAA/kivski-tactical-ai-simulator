@@ -41,6 +41,7 @@ dependencies = [
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "trueskill>=0.4.5",
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
