@@ -84,7 +84,9 @@ const WinrateChart = () => {
   );
 
   if (data.length === 0) {
-    return <NoData msg="No metrics samples yet — start training or run eval episodes." />;
+    return (
+      <NoData msg="Training metrics appear here once a job runs. Start training (or run a quick eval) to populate." />
+    );
   }
 
   return (

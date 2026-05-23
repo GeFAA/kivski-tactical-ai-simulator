@@ -29,9 +29,13 @@ import type {
   AgentSnapshot,
   BombPhase,
   BombSnapshot,
+  CommAction,
+  EventItem,
+  EventKind,
   MapInfoFrame,
   MatchPhase,
   MatchSnapshot,
+  MessageItem,
   Side,
   Team,
   Vec2,
@@ -122,6 +126,46 @@ export const WEAPON_INT_TO_NAME: Record<number, string> = {
   4: "Hex-Rifle",
   5: "Talon Marksman",
   6: "Maw-12",
+};
+
+/**
+ * `CommAction` enum in the backend (`packages/sim/kivski_sim/types.py`):
+ *     NONE=0, PING_LOCATION=1, WARN_DANGER=2, REQUEST_SUPPORT=3,
+ *     SUGGEST_ROTATE=4, SUGGEST_ATTACK=5, SUGGEST_FALLBACK=6,
+ *     CONTACT_ENEMY=7, BOMBSITE_CLEAR=8
+ *
+ * The frontend type uses string unions; the backend's `NONE` maps to the
+ * `SILENT` literal so the comms styling table (`commActionStyle`) can
+ * render an opaque "no-op" entry for diagnostic frames.
+ */
+export const COMM_ACTION_INT_TO_STRING: Record<number, CommAction> = {
+  0: "SILENT",
+  1: "PING_LOCATION",
+  2: "WARN_DANGER",
+  3: "REQUEST_SUPPORT",
+  4: "SUGGEST_ROTATE",
+  5: "SUGGEST_ATTACK",
+  6: "SUGGEST_FALLBACK",
+  7: "CONTACT_ENEMY",
+  8: "BOMBSITE_CLEAR",
+};
+
+/**
+ * Human-readable display label for each comm action — used by the inspector
+ * and the comms tab when rendering message chips. Kept in step with
+ * `commActionStyle` in `event-icons.ts` (label-only mirror).
+ */
+export const COMM_ACTION_LABEL: Record<CommAction, string> = {
+  SILENT: "Silent",
+  PING_LOCATION: "Ping Location",
+  WARN_DANGER: "Warn Danger",
+  REQUEST_SUPPORT: "Request Support",
+  SUGGEST_ROTATE: "Suggest Rotate",
+  SUGGEST_ATTACK: "Suggest Attack",
+  SUGGEST_FALLBACK: "Suggest Fall Back",
+  CONTACT_ENEMY: "Enemy Contact",
+  BOMBSITE_CLEAR: "Bombsite Clear",
+  ACK: "Acknowledge",
 };
 
 // ---------------------------------------------------------------------------
@@ -272,9 +316,14 @@ export function decodeAgentSnapshot(
     bombContext.phase === "defusing" &&
     bombContext.defuserId === id;
 
+  // Friendly display name: agent_3 → "Y-3" / "B-3" so the team prefix is
+  // visible everywhere the name surfaces (sidebar, inspector, comms chips).
+  const numericTail = id.startsWith("agent_") ? id.slice("agent_".length) : id;
+  const teamPrefix = team === "yellow" ? "Y" : "B";
+  const friendlyName = `${teamPrefix}-${numericTail}`;
   return {
     id,
-    name: `Agent ${id}`,
+    name: friendlyName,
     team,
     side,
     pos: toVec2(raw.pos),
@@ -426,4 +475,122 @@ export function decodeMapInfo(raw: unknown): MapInfoFrame {
   const tickRateRaw = r.tickRate ?? r.tick_rate_hz;
   const tickRate = typeof tickRateRaw === "number" ? tickRateRaw : undefined;
   return { mapName: name, tickRate };
+}
+
+// ---------------------------------------------------------------------------
+// Per-tick comm message translator
+// ---------------------------------------------------------------------------
+
+interface RawMessage {
+  tick?: unknown;
+  sender?: unknown;
+  receivers?: unknown;
+  action?: unknown;
+  payload?: unknown;
+  pos?: unknown;
+}
+
+/**
+ * Decode one entry from a snapshot's `messages[]` buffer (see
+ * `engine.Engine._message_to_dict`). The backend ships `payload` as a
+ * numpy array which currently can't survive JSON serialization, so the
+ * field is usually absent on the wire; if it is present we attempt to
+ * parse it as a flat number list.
+ *
+ * `fallbackTick` is used when the raw payload omits `tick` (older backends).
+ */
+export function decodeMessageItem(raw: unknown, fallbackTick = 0): MessageItem {
+  const r: RawMessage = (typeof raw === "object" && raw !== null ? raw : {}) as RawMessage;
+  const tick = toInt(r.tick, fallbackTick);
+  const senderId = toInt(r.sender, 0);
+  const fromId = agentIdToString(senderId);
+  const receivers = Array.isArray(r.receivers) ? (r.receivers as unknown[]) : [];
+  const toIds = receivers.map((rid) => agentIdToString(toInt(rid, 0)));
+  const actionInt = toInt(r.action, 0);
+  const action = COMM_ACTION_INT_TO_STRING[actionInt] ?? "SILENT";
+  const actionLabel = COMM_ACTION_LABEL[action];
+  const posRaw = r.pos;
+  const pos: Vec2 | undefined =
+    Array.isArray(posRaw) || (typeof posRaw === "object" && posRaw !== null)
+      ? toVec2(posRaw)
+      : undefined;
+  const payload: number[] | undefined = Array.isArray(r.payload)
+    ? (r.payload as unknown[]).map((p) => toNumber(p, 0))
+    : undefined;
+  const recvCount = toIds.length;
+  const text = `${actionLabel} → ${recvCount} teammate${recvCount === 1 ? "" : "s"}`;
+  // Random suffix avoids id-collisions when multiple messages share the
+  // exact tick/sender/action combo (silent-spam case).
+  const id = `msg-${tick}-${senderId}-${actionInt}-${Math.random()
+    .toString(36)
+    .slice(2, 6)}`;
+  return {
+    id,
+    ts: Date.now(),
+    tick,
+    fromId,
+    toIds,
+    text,
+    tag: action.toLowerCase().replace(/_/g, "-"),
+    action,
+    actionLabel,
+    pos,
+    payload,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-tick combat event translator
+// ---------------------------------------------------------------------------
+
+interface RawCombatEvent {
+  tick?: unknown;
+  attacker?: unknown;
+  victim?: unknown;
+  weapon?: unknown;
+  damage?: unknown;
+  killed?: unknown;
+  distance?: unknown;
+  through_cover?: unknown;
+}
+
+/**
+ * Decode one entry from a snapshot's `events[]` buffer (combat events
+ * only — see `engine.Engine._combat_event_to_dict`). `kind` is either
+ * `"kill"` (when the engine flagged the hit as lethal) or `"info"`
+ * (non-lethal hit) so the existing chip styles light up correctly.
+ */
+export function decodeEventItem(raw: unknown, fallbackTick = 0): EventItem {
+  const r: RawCombatEvent = (typeof raw === "object" && raw !== null
+    ? raw
+    : {}) as RawCombatEvent;
+  const tick = toInt(r.tick, fallbackTick);
+  const attackerId = toInt(r.attacker, 0);
+  const victimId = toInt(r.victim, 0);
+  const weaponInt = toInt(r.weapon, 0);
+  const damage = toNumber(r.damage, 0);
+  const distance = toNumber(r.distance, 0);
+  const killed = toBool(r.killed, false);
+  const throughCover = toBool(r.through_cover, false);
+
+  const actorIdStr = agentIdToString(attackerId);
+  const targetIdStr = agentIdToString(victimId);
+  const weaponName = WEAPON_INT_TO_NAME[weaponInt] ?? "weapon";
+  const kind: EventKind = killed ? "kill" : "info";
+  const coverHint = throughCover ? ", through cover" : "";
+  const text = killed
+    ? `${actorIdStr} killed ${targetIdStr} (${weaponName}, ${distance.toFixed(1)}t${coverHint})`
+    : `${actorIdStr} hit ${targetIdStr} for ${Math.round(damage)} HP (${weaponName}, ${distance.toFixed(1)}t${coverHint})`;
+  const id = `evt-${tick}-${attackerId}-${victimId}-${Math.random()
+    .toString(36)
+    .slice(2, 6)}`;
+  return {
+    id,
+    ts: Date.now(),
+    tick,
+    kind,
+    actorId: actorIdStr,
+    targetId: targetIdStr,
+    text,
+  };
 }

@@ -1,28 +1,28 @@
 import { useMemo } from "react";
 import { useStore, selectSelectedAgent } from "@/lib/store";
 import { commActionStyle } from "@/lib/event-icons";
-import type { MessageItem } from "@/lib/types";
+import type { CommAction, MessageItem } from "@/lib/types";
 
 /**
- * Right-sidebar Comms tab. Shows per-agent message history (Received,
- * Sent) and a small bar chart of the latest attention weights toward
- * teammates.
+ * Right-sidebar Comms tab. Shows the global stream of inter-agent comm
+ * messages as a single timeline ("newest on top"), with a header that
+ * summarises how many of each comm-action have been seen recently.
  *
- * When no agent is selected we render a hint to nudge the user to pick
- * one — without a focus we'd just be dumping the whole stream which is
- * already in the Event Feed tab.
+ * If an agent is selected we render a "Focus" filter chip at the top so
+ * the user can flip between "all comms" and "only what this agent
+ * sent/received" — without that flip we'd hide the global feed any
+ * time someone clicks a dot on the map, which is more annoying than
+ * helpful.
  */
 
 // ---------- Payload preview ----------
 
 const PayloadBars = ({ values }: { values: number[] }) => {
-  if (!values || values.length === 0) {
-    return <span className="stat text-[10px] text-kivski-muted">no payload</span>;
-  }
+  if (!values || values.length === 0) return null;
   // Normalize to [-1, 1] range for visual scale.
   const max = Math.max(1, ...values.map((v) => Math.abs(v)));
   return (
-    <div className="flex h-5 items-end gap-px">
+    <div className="flex h-5 items-end gap-px" title="payload vector">
       {values.slice(0, 16).map((v, i) => {
         const h = Math.max(2, Math.round((Math.abs(v) / max) * 100));
         const positive = v >= 0;
@@ -30,7 +30,10 @@ const PayloadBars = ({ values }: { values: number[] }) => {
           <div
             key={i}
             className={`w-1 ${positive ? "bg-kivski-defender" : "bg-kivski-hp-low"}`}
-            style={{ height: `${h}%`, opacity: 0.65 + (Math.abs(v) / max) * 0.35 }}
+            style={{
+              height: `${h}%`,
+              opacity: 0.65 + (Math.abs(v) / max) * 0.35,
+            }}
             title={v.toFixed(3)}
           />
         );
@@ -39,154 +42,206 @@ const PayloadBars = ({ values }: { values: number[] }) => {
   );
 };
 
-// ---------- Message row ----------
+// ---------- Header summary ----------
 
-const MessageRow = ({
-  m,
-  selfId,
-  direction,
-}: {
-  m: MessageItem;
-  selfId: string;
-  direction: "in" | "out";
-}) => {
-  const style = commActionStyle(m.action);
-  const other = direction === "in" ? m.fromId : m.toIds.filter((id) => id !== selfId).join(", ") || "broadcast";
+const ACTION_ORDER: CommAction[] = [
+  "PING_LOCATION",
+  "WARN_DANGER",
+  "REQUEST_SUPPORT",
+  "SUGGEST_ROTATE",
+  "SUGGEST_ATTACK",
+  "SUGGEST_FALLBACK",
+  "CONTACT_ENEMY",
+  "BOMBSITE_CLEAR",
+  "ACK",
+  "SILENT",
+];
+
+const ActionCountChips = ({ messages }: { messages: MessageItem[] }) => {
+  const counts = useMemo(() => {
+    const c: Partial<Record<CommAction, number>> = {};
+    for (const m of messages) {
+      const a = m.action ?? "SILENT";
+      c[a] = (c[a] ?? 0) + 1;
+    }
+    return c;
+  }, [messages]);
+
+  const visible = ACTION_ORDER.filter((a) => (counts[a] ?? 0) > 0);
+  if (visible.length === 0) {
+    return (
+      <span className="stat text-[10px] text-kivski-muted">no comms yet</span>
+    );
+  }
 
   return (
-    <li className="border-b border-kivski-border/60 px-2 py-1.5 last:border-b-0">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 min-w-0">
+    <div className="flex flex-wrap gap-1">
+      {visible.map((a) => {
+        const style = commActionStyle(a);
+        return (
           <span
+            key={a}
             className="pill"
             style={{ background: `${style.css}22`, color: style.css }}
             title={style.label}
           >
             <span className="mr-1 font-bold">{style.glyph}</span>
-            {m.actionLabel ?? style.label}
+            {counts[a]}
           </span>
-          <span className="truncate text-[11px] text-kivski-text">
-            {direction === "in" ? "from " : "to "}
-            <span className="font-medium">{other}</span>
-          </span>
-        </div>
-        <span className="stat shrink-0 text-[10px] text-kivski-muted">tick {m.tick}</span>
-      </div>
-      {m.text && <div className="mt-0.5 text-[11px] text-kivski-muted">{m.text}</div>}
-      <div className="mt-1">
-        <PayloadBars values={m.payload ?? []} />
-      </div>
-    </li>
+        );
+      })}
+    </div>
   );
 };
 
-// ---------- Attention chart ----------
+// ---------- One row in the feed ----------
 
-const AttentionPanel = ({ selectedId }: { selectedId: string }) => {
-  const agents = useStore((s) => s.agents);
-  const weights = useStore((s) => s.attentionWeights[selectedId]);
+const formatTimeAgo = (ts: number): string => {
+  const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  return `${Math.floor(sec / 60)}m ago`;
+};
 
-  const sortedEntries = useMemo(() => {
-    if (!weights) return [];
-    return Object.entries(weights)
-      .filter(([id]) => id !== selectedId)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8);
-  }, [weights, selectedId]);
-
-  if (sortedEntries.length === 0) {
-    return (
-      <div className="text-[11px] text-kivski-muted">
-        No attention data for this agent yet.
-      </div>
-    );
-  }
-
-  const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
-  const sideOf = (id: string) => agents.find((a) => a.id === id)?.side;
-
+const MessageRow = ({
+  m,
+  nameOf,
+}: {
+  m: MessageItem;
+  nameOf: (id: string) => string;
+}) => {
+  const style = commActionStyle(m.action);
+  const receiverNames = m.toIds.map(nameOf);
+  const receiverPreview = receiverNames.length === 0 ? "—" : receiverNames.join(", ");
+  const trimmedReceivers =
+    receiverNames.length > 3
+      ? `${receiverNames.slice(0, 3).join(", ")} +${receiverNames.length - 3}`
+      : receiverPreview;
   return (
-    <ul className="space-y-1">
-      {sortedEntries.map(([id, w]) => {
-        const side = sideOf(id);
-        const bar = side === "attacker" ? "bg-kivski-attacker" : "bg-kivski-defender";
-        return (
-          <li key={id} className="flex items-center gap-2 text-[11px]">
-            <span className="w-20 truncate text-kivski-text">{nameOf(id)}</span>
-            <div className="relative h-1.5 flex-1 overflow-hidden rounded bg-kivski-bg">
-              <div
-                className={`absolute inset-y-0 left-0 ${bar}`}
-                style={{ width: `${Math.round(Math.min(1, Math.max(0, w)) * 100)}%` }}
-              />
-            </div>
-            <span className="stat w-10 text-right text-kivski-muted">{w.toFixed(2)}</span>
-          </li>
-        );
-      })}
-    </ul>
+    <li className="flex items-stretch gap-2 border-b border-kivski-border/60 px-2 py-1.5 last:border-b-0">
+      <div
+        className="w-0.5 shrink-0 rounded"
+        style={{ background: style.css, opacity: 0.7 }}
+        title={style.label}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="stat text-[11px] font-medium text-kivski-text">
+              {nameOf(m.fromId)}
+            </span>
+            <span
+              className="pill shrink-0"
+              style={{ background: `${style.css}22`, color: style.css }}
+              title={style.label}
+            >
+              <span className="mr-1 font-bold">{style.glyph}</span>
+              {m.actionLabel ?? style.label}
+            </span>
+          </div>
+          <span className="stat shrink-0 text-[10px] text-kivski-muted">
+            tick {m.tick}
+          </span>
+        </div>
+        <div className="mt-0.5 truncate text-[11px] text-kivski-muted">
+          → {trimmedReceivers}
+        </div>
+        <div className="mt-0.5 flex items-end justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            {m.pos && (
+              <span className="stat text-[10px] text-kivski-muted">
+                @({m.pos.x.toFixed(1)}, {m.pos.y.toFixed(1)})
+              </span>
+            )}
+          </div>
+          <div className="shrink-0">
+            <PayloadBars values={m.payload ?? []} />
+          </div>
+          <span className="stat shrink-0 text-[10px] text-kivski-muted">
+            {formatTimeAgo(m.ts)}
+          </span>
+        </div>
+      </div>
+    </li>
   );
 };
 
 // ---------- Container ----------
 
 const CommsTab = () => {
-  const agent = useStore(selectSelectedAgent);
-  const messages = useStore((s) => s.recentMessages);
+  const allMessages = useStore((s) => s.recentMessages);
+  const agents = useStore((s) => s.agents);
+  const selected = useStore(selectSelectedAgent);
+  const selectAgent = useStore((s) => s.selectAgent);
 
-  if (!agent) {
-    return (
-      <div className="flex h-full items-center justify-center px-4 text-center text-xs text-kivski-muted">
-        Select an agent on the map or in the sidebar to inspect their comms.
-      </div>
+  const filtered = useMemo(() => {
+    if (!selected) return allMessages;
+    return allMessages.filter(
+      (m) => m.fromId === selected.id || m.toIds.includes(selected.id),
     );
-  }
+  }, [allMessages, selected]);
 
-  const received = messages.filter((m) => m.toIds.includes(agent.id)).slice(0, 10);
-  const sent = messages.filter((m) => m.fromId === agent.id).slice(0, 10);
+  /**
+   * Translate a raw `agent_<n>` id into the friendly "Y-3"/"B-7" display
+   * name set by the wire decoder. Falls back to the raw id if the agent
+   * has been removed from the snapshot (e.g. mid-respawn).
+   */
+  const nameOf = useMemo(() => {
+    const lookup = new Map<string, string>();
+    for (const a of agents) lookup.set(a.id, a.name);
+    return (id: string): string => lookup.get(id) ?? id;
+  }, [agents]);
 
   return (
     <div className="flex flex-col gap-2 p-2">
       <section className="panel p-2">
-        <div className="mb-1 flex items-center justify-between">
+        <div className="mb-1.5 flex items-baseline justify-between gap-2">
           <span className="text-[10px] uppercase tracking-widest text-kivski-muted">
-            Received
+            Comm stream
           </span>
-          <span className="stat text-[10px] text-kivski-muted">{received.length}</span>
+          <span className="stat text-[10px] text-kivski-muted">
+            {allMessages.length} total · showing {filtered.length}
+          </span>
         </div>
-        {received.length === 0 ? (
-          <div className="text-[11px] text-kivski-muted">No incoming messages.</div>
-        ) : (
-          <ul className="flex flex-col">
-            {received.map((m) => (
-              <MessageRow key={m.id} m={m} selfId={agent.id} direction="in" />
-            ))}
-          </ul>
+        <ActionCountChips messages={allMessages} />
+        {selected && (
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-kivski-muted">
+              Focus
+            </span>
+            <span className="pill bg-kivski-defender/15 text-kivski-defender">
+              {selected.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => selectAgent(null)}
+              className="ml-auto text-[10px] text-kivski-muted underline hover:text-kivski-text"
+            >
+              clear
+            </button>
+          </div>
         )}
       </section>
 
-      <section className="panel p-2">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-widest text-kivski-muted">
-            Sent
-          </span>
-          <span className="stat text-[10px] text-kivski-muted">{sent.length}</span>
-        </div>
-        {sent.length === 0 ? (
-          <div className="text-[11px] text-kivski-muted">No outgoing messages.</div>
+      <section className="panel min-h-0">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-1 px-4 py-6 text-center text-[11px] text-kivski-muted">
+            <div className="text-2xl opacity-50">·</div>
+            <div className="text-kivski-text">
+              {selected ? `No comms involving ${selected.name} yet.` : "No agent comms yet."}
+            </div>
+            <div className="text-kivski-muted">
+              Random policy is mostly silent. Comms appear when an agent
+              fires a CommAction (ping, warn, request, rotate, etc.).
+              Training-driven policies emit far more frequent comms.
+            </div>
+          </div>
         ) : (
           <ul className="flex flex-col">
-            {sent.map((m) => (
-              <MessageRow key={m.id} m={m} selfId={agent.id} direction="out" />
+            {filtered.map((m) => (
+              <MessageRow key={m.id} m={m} nameOf={nameOf} />
             ))}
           </ul>
         )}
-      </section>
-
-      <section className="panel p-2">
-        <div className="mb-1.5 text-[10px] uppercase tracking-widest text-kivski-muted">
-          Attention weights
-        </div>
-        <AttentionPanel selectedId={agent.id} />
       </section>
     </div>
   );

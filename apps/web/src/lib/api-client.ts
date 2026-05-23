@@ -20,7 +20,12 @@
  */
 
 import type { MatchSnapshot, TrainingStatus, WSFrame } from "./types";
-import { decodeMapInfo, decodeMatchSnapshot } from "./wire";
+import {
+  decodeEventItem,
+  decodeMapInfo,
+  decodeMatchSnapshot,
+  decodeMessageItem,
+} from "./wire";
 
 // ---------- REST ----------
 
@@ -552,14 +557,17 @@ function isSessionLostFrame(frame: unknown): boolean {
 }
 
 /**
- * Map a raw incoming JSON frame from the backend onto the typed
- * `WSFrame` union the rest of the app consumes. Performs the
- * snapshot decode in-line so consumers never see snake_case shapes.
+ * Map a raw incoming JSON frame from the backend onto a list of typed
+ * `WSFrame` objects the rest of the app consumes. Returns an array
+ * because a single backend `snapshot` frame can fan out into one
+ * snapshot frame plus N `event`/`message` frames (the backend keeps
+ * per-tick comms and combat events nested inside the snapshot payload
+ * rather than streaming them as their own frames).
  */
-function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
-  if (typeof parsed !== "object" || parsed === null) return null;
+function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame[] {
+  if (typeof parsed !== "object" || parsed === null) return [];
   const f = parsed as { type?: unknown };
-  if (typeof f.type !== "string") return null;
+  if (typeof f.type !== "string") return [];
 
   const kind = f.type;
   const obj = parsed as Record<string, unknown>;
@@ -568,23 +576,39 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
     case "snapshot": {
       const data = obj.data;
       const snap: MatchSnapshot = decodeMatchSnapshot(data, mapName);
-      return { type: "snapshot", data: snap };
+      const out: WSFrame[] = [{ type: "snapshot", data: snap }];
+      // Fan out per-tick comms and combat events that live inside the
+      // raw snapshot payload. These are transient (cleared next tick),
+      // so we forward each one to the App-level handler which routes
+      // them into the comms/events feeds.
+      const rawData = (typeof data === "object" && data !== null
+        ? (data as Record<string, unknown>)
+        : {}) as Record<string, unknown>;
+      const rawMessages = Array.isArray(rawData.messages) ? rawData.messages : [];
+      for (const rm of rawMessages) {
+        out.push({ type: "message", data: decodeMessageItem(rm, snap.tick) });
+      }
+      const rawEvents = Array.isArray(rawData.events) ? rawData.events : [];
+      for (const re of rawEvents) {
+        out.push({ type: "event", data: decodeEventItem(re, snap.tick) });
+      }
+      return out;
     }
     case "map_info": {
       const info = decodeMapInfo(obj.data);
-      return { type: "map_info", data: info };
+      return [{ type: "map_info", data: info }];
     }
     case "match_done": {
       const matchId = typeof obj.match_id === "string" ? obj.match_id : undefined;
-      return { type: "match_done", matchId };
+      return [{ type: "match_done", matchId }];
     }
     case "pong": {
       const ts = typeof obj.ts === "number" ? obj.ts : Date.now() / 1000;
-      return { type: "pong", ts };
+      return [{ type: "pong", ts }];
     }
     case "ack": {
       const forKind = typeof obj.for === "string" ? obj.for : "unknown";
-      return { type: "ack", for: forKind, ...obj };
+      return [{ type: "ack", for: forKind, ...obj }];
     }
     case "error": {
       // Backend uses {type:"error", detail:"..."}; frontend WSFrame
@@ -594,7 +618,7 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
       const message =
         detail ??
         (dataField && typeof dataField.message === "string" ? dataField.message : "unknown error");
-      return { type: "error", data: { message } };
+      return [{ type: "error", data: { message } }];
     }
     case "metrics_sample": {
       // Normalise snake_case → camelCase so the rest of the app sees
@@ -616,7 +640,7 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
         valueLoss: pickNumber("value_loss") ?? pickNumber("valueLoss"),
         entropy: pickNumber("entropy"),
       };
-      return { type: "metrics_sample", data: sample };
+      return [{ type: "metrics_sample", data: sample }];
     }
     case "event":
     case "message":
@@ -628,11 +652,10 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
       // These frame types pass through unchanged. The runtime shape
       // matches the WSFrame contract (still loosely-typed `as` cast —
       // upstream backend doesn't ship them yet in V1).
-      return parsed as WSFrame;
+      return [parsed as WSFrame];
     default:
-
       console.warn("[kivski] unknown WS frame type:", kind);
-      return null;
+      return [];
   }
 }
 
@@ -765,15 +788,16 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
         }
 
         const adapted = adaptIncomingFrame(parsed, mapName);
-        if (adapted === null) return;
+        if (adapted.length === 0) return;
 
-        // Track the map name from the initial map_info frame so any
-        // subsequent snapshots are tagged with the correct map.
-        if (adapted.type === "map_info") {
-          mapName = adapted.data.mapName;
+        for (const frame of adapted) {
+          // Track the map name from the initial map_info frame so any
+          // subsequent snapshots are tagged with the correct map.
+          if (frame.type === "map_info") {
+            mapName = frame.data.mapName;
+          }
+          opts.onFrame(frame);
         }
-
-        opts.onFrame(adapted);
       } catch (err) {
 
         console.warn("[kivski] WS parse error:", err);
