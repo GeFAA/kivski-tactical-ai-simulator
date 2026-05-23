@@ -7,11 +7,11 @@ test environments without PyTorch installed can still import this module.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 
 __all__ = ["FrozenSnapshotBaseline"]
 
@@ -53,9 +53,7 @@ class FrozenSnapshotBaseline:
         self._ckpt_path: Path = Path(checkpoint_path).expanduser().resolve()
 
         if not self._ckpt_path.is_file():
-            raise FileNotFoundError(
-                f"FrozenSnapshotBaseline checkpoint not found: {self._ckpt_path}"
-            )
+            raise FileNotFoundError(f"FrozenSnapshotBaseline checkpoint not found: {self._ckpt_path}")
 
         # Try to use the trainer's official bundle loader first; fall back to
         # a generic ``torch.load`` so unit tests can hand us a barebones .pt
@@ -64,20 +62,14 @@ class FrozenSnapshotBaseline:
         try:
             from kivski_agents.policy_runner import PolicyBundle  # noqa: PLC0415
 
-            self._bundle = PolicyBundle.from_checkpoint(
-                str(self._ckpt_path), device=self._device
-            )
+            self._bundle = PolicyBundle.from_checkpoint(str(self._ckpt_path), device=self._device)
         except Exception:
             # Fall back: load the state dict and store it raw. The act()
             # method below will fail loudly if invoked without a proper model.
             try:
-                self._raw_state = torch.load(
-                    str(self._ckpt_path), map_location=self._device
-                )
+                self._raw_state = torch.load(str(self._ckpt_path), map_location=self._device)
             except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load checkpoint {self._ckpt_path!s}: {exc}"
-                ) from exc
+                raise RuntimeError(f"Failed to load checkpoint {self._ckpt_path!s}: {exc}") from exc
 
         self._agent_names: list[str] = []
         # Per-agent recurrent hidden state, lazily created on first act().
@@ -88,14 +80,12 @@ class FrozenSnapshotBaseline:
     def reset(self, agent_names: list[str]) -> None:
         """Clear recurrent state at the start of a fresh episode."""
         self._agent_names = list(agent_names)
-        self._hidden_state = {name: None for name in agent_names}
+        self._hidden_state = dict.fromkeys(agent_names)
         if self._bundle is not None and hasattr(self._bundle, "reset"):
-            try:
+            # Bundle is responsible for its own state; ignore reset failures
+            # in inference-only mode.
+            with contextlib.suppress(Exception):
                 self._bundle.reset(agent_names)
-            except Exception:
-                # Bundle is responsible for its own state; ignore reset
-                # failures in inference-only mode.
-                pass
 
     # ------------------------------------------------------------------
 

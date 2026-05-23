@@ -20,7 +20,6 @@ import time
 import uuid
 from pathlib import Path
 
-
 __all__ = [
     "generate_run_name",
     "latest_run_name",
@@ -42,9 +41,7 @@ def generate_run_name(prefix: str = "kivski") -> str:
         ValueError: If ``prefix`` is empty or contains whitespace.
     """
     if not prefix or any(ch.isspace() for ch in prefix):
-        raise ValueError(
-            f"prefix must be a non-empty whitespace-free string, got {prefix!r}"
-        )
+        raise ValueError(f"prefix must be a non-empty whitespace-free string, got {prefix!r}")
     ts = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     short = uuid.uuid4().hex[:8]
     return f"{prefix}-{ts}-{short}"
@@ -63,11 +60,7 @@ def list_runs(log_dir: Path) -> list[str]:
     root = Path(log_dir)
     if not root.exists():
         return []
-    entries = [
-        p
-        for p in root.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    ]
+    entries = [p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")]
     entries.sort(key=lambda p: (p.stat().st_mtime, p.name))
     return [p.name for p in entries]
 

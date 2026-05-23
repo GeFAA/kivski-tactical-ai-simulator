@@ -9,7 +9,6 @@ The point is to verify wiring, not learning quality.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -17,12 +16,12 @@ import pytest
 torch = pytest.importorskip("torch")
 pettingzoo = pytest.importorskip("pettingzoo")
 
-from kivski_sim.config import load_config
-from kivski_sim.map_loader import load_map
-from kivski_sim.env import KivskiParallelEnv
 from kivski_agents.baselines import get_baseline
 from kivski_agents.eval.runner import EvalRunner
 from kivski_agents.eval.scenarios import ALL_SCENARIOS
+from kivski_sim.config import load_config
+from kivski_sim.env import KivskiParallelEnv
+from kivski_sim.map_loader import load_map
 
 
 def test_environment_runs_a_full_match_with_random_policies():
@@ -79,8 +78,8 @@ def test_eval_runner_random_vs_scripted_completes():
 
 def test_full_training_smoke_one_update(tmp_path: Path, monkeypatch):
     """Tiny end-to-end: build trainer, run two updates, verify checkpoint round-trip."""
-    from kivski_agents.training.trainer import Trainer, TrainerConfig
     from kivski_agents.telemetry import NoOpSink
+    from kivski_agents.training.trainer import Trainer, TrainerConfig
 
     cfg = load_config("configs/default.yaml")
 
@@ -89,8 +88,8 @@ def test_full_training_smoke_one_update(tmp_path: Path, monkeypatch):
         rollout_steps=16,
         num_envs=2,
         checkpoint_every=1,
-        eval_every=10_000,         # don't run eval in smoke
-        snapshot_every=10_000,     # don't snapshot in smoke
+        eval_every=10_000,  # don't run eval in smoke
+        snapshot_every=10_000,  # don't snapshot in smoke
         log_dir=tmp_path / "logs",
         checkpoint_dir=tmp_path / "ckpt",
         device=torch.device("cpu"),
@@ -123,9 +122,9 @@ def test_full_training_smoke_one_update(tmp_path: Path, monkeypatch):
 
 def test_replay_format_round_trips(tmp_path: Path):
     from kivski_sim.replay import (
-        ReplayHeader,
         ReplayActionFrame,
         ReplayEventFrame,
+        ReplayHeader,
         ReplayReader,
         ReplayWriter,
     )

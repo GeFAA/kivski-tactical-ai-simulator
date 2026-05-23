@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
-
 import kivski_sim
+from fastapi import APIRouter
 
 import kivski_api
 

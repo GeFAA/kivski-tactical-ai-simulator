@@ -33,9 +33,9 @@ class AgentState:
     agent_id: int
     team: Team
     side: Side
-    pos: np.ndarray                   # shape (2,) float32 -- tile coordinates
-    vel: np.ndarray                   # shape (2,) float32
-    facing: float = 0.0               # radians
+    pos: np.ndarray  # shape (2,) float32 -- tile coordinates
+    vel: np.ndarray  # shape (2,) float32
+    facing: float = 0.0  # radians
     alive: bool = True
     hp: float = 100.0
     armor: float = 0.0
@@ -45,7 +45,7 @@ class AgentState:
     has_bomb: bool = False
     has_defuse_kit: bool = False
     last_shot_tick: int = -1000
-    reaction_cooldown: int = 0        # ticks until next aim/fire allowed
+    reaction_cooldown: int = 0  # ticks until next aim/fire allowed
     buy_choice_pending: BuyChoice = BuyChoice.NONE
     armor_buy_pending: bool = False
     # Per-round bookkeeping
@@ -65,13 +65,13 @@ class BombState:
     """State of the bomb object on the map."""
 
     phase: BombPhase = BombPhase.CARRIED
-    carrier: int = -1                 # AgentId or -1 if not carried
+    carrier: int = -1  # AgentId or -1 if not carried
     pos: np.ndarray = field(default_factory=lambda: np.zeros(2, dtype=np.float32))
-    plant_progress: float = 0.0       # 0..1
+    plant_progress: float = 0.0  # 0..1
     defuse_progress: float = 0.0
     defuser: int = -1
     time_since_plant: float = 0.0
-    site: str | None = None           # "A" | "B" once planted
+    site: str | None = None  # "A" | "B" once planted
 
 
 @dataclass(slots=True)
@@ -79,7 +79,7 @@ class TeamState:
     team: Team
     side: Side
     score: int = 0
-    consecutive_losses: int = 0       # for loss-bonus stacking
+    consecutive_losses: int = 0  # for loss-bonus stacking
     # Per-round running aggregates for reward shaping / metrics
     map_control_tiles: int = 0
 

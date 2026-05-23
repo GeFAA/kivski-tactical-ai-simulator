@@ -20,6 +20,7 @@ both decentralised actors and centralised critics (CTDE).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -28,11 +29,10 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from kivski_sim.config import MLConfig
 
 from kivski_agents.buffer import RolloutBuffer
 from kivski_agents.networks.actor_critic import KivskiActorCritic
-from kivski_sim.config import MLConfig
-
 
 __all__ = ["MAPPOLoss", "MAPPOTrainer"]
 
@@ -142,9 +142,7 @@ class MAPPOTrainer:
                 policy_loss = -(torch.min(surr1, surr2) * mask).sum() / mask_sum
 
                 # ---- Value loss (with clipping) ----
-                v_clipped = batch.old_values + torch.clamp(
-                    new_values - batch.old_values, -clip, clip
-                )
+                v_clipped = batch.old_values + torch.clamp(new_values - batch.old_values, -clip, clip)
                 v_loss_unclipped = F.mse_loss(new_values, batch.returns, reduction="none")
                 v_loss_clipped = F.mse_loss(v_clipped, batch.returns, reduction="none")
                 # Value is centralised -- use the simple mean across the minibatch.
@@ -157,9 +155,7 @@ class MAPPOTrainer:
 
                 self.optimizer.zero_grad(set_to_none=True)
                 total_loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), max_norm=max_grad_norm
-                )
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_grad_norm)
                 self.optimizer.step()
 
                 # ---- Diagnostics ----
@@ -220,7 +216,11 @@ class MAPPOTrainer:
             },
             out_path,
         )
-        sidecar = out_path.with_suffix(out_path.suffix + ".json") if out_path.suffix else out_path.with_suffix(".json")
+        sidecar = (
+            out_path.with_suffix(out_path.suffix + ".json")
+            if out_path.suffix
+            else out_path.with_suffix(".json")
+        )
         with sidecar.open("w", encoding="utf-8") as fh:
             json.dump(metadata, fh, indent=2, sort_keys=True, default=_json_safe)
         return out_path
@@ -231,12 +231,10 @@ class MAPPOTrainer:
         ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(ckpt["model"])
         if "optimizer" in ckpt:
-            try:
+            # Optimizer state may be mismatched if model layout changed.
+            # We surface this through metadata but don't crash.
+            with contextlib.suppress(ValueError, KeyError):
                 self.optimizer.load_state_dict(ckpt["optimizer"])
-            except (ValueError, KeyError):
-                # Optimizer state may be mismatched if model layout changed.
-                # We surface this through metadata but don't crash.
-                pass
         meta = dict(ckpt.get("metadata", {}))
         self._update_steps = int(meta.get("update_steps", self._update_steps))
         return meta

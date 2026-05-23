@@ -28,21 +28,21 @@ interface used by the rest of the eval / training stack.
 
 from __future__ import annotations
 
+import contextlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+from kivski_sim.config import LeagueConfig
+from kivski_sim.env import KivskiParallelEnv
+from kivski_sim.map_loader import MapData
 
 from kivski_agents.baselines import BASELINE_REGISTRY, get_baseline
 from kivski_agents.eval.elo import EloTracker
 from kivski_agents.policy_runner import PolicyBundle, PolicyRunner
-from kivski_sim.config import KivskiConfig, LeagueConfig
-from kivski_sim.env import KivskiParallelEnv
-from kivski_sim.map_loader import MapData
-
 
 __all__ = [
     "LeagueEntry",
@@ -67,7 +67,7 @@ class LeagueEntry:
     creation_episode: int = 0
     plays: int = 0
     wins: int = 0
-    kind: str = "snapshot"           # "main" | "baseline" | "snapshot"
+    kind: str = "snapshot"  # "main" | "baseline" | "snapshot"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,7 +81,7 @@ class LeagueEntry:
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "LeagueEntry":
+    def from_dict(cls, raw: dict[str, Any]) -> LeagueEntry:
         return cls(
             name=str(raw.get("name", "?")),
             bundle_path=Path(raw["bundle_path"]) if raw.get("bundle_path") else None,
@@ -113,12 +113,10 @@ class OpponentSampler:
 
     def reset(self, agent_names: list[str]) -> None:
         self._agent_names = list(agent_names)
-        try:
+        # Some policies (e.g. very small stub baselines used in tests) may
+        # raise here; we silently swallow to keep the trainer alive.
+        with contextlib.suppress(Exception):
             self.policy.reset(agent_names)
-        except Exception:
-            # Some policies (e.g. very small stub baselines used in tests) may
-            # raise here; we silently swallow to keep the trainer alive.
-            pass
 
     def act(
         self,
@@ -215,7 +213,7 @@ class LeagueManager:
             )
 
         self.elo_tracker: EloTracker = EloTracker()
-        for name in self.roster.keys():
+        for name in self.roster:
             self.elo_tracker.add_policy(name)
 
     # ------------------------------------------------------------------
@@ -308,12 +306,10 @@ class LeagueManager:
 
         if entry.kind == "main":
             if self._main_model is None:
-                raise RuntimeError(
-                    "LeagueManager: 'main' opponent requested but no model was set."
-                )
-            return OpponentSampler(name="main", policy=MainSelfPlayPolicy(
-                model=self._main_model, device=self.device
-            ))
+                raise RuntimeError("LeagueManager: 'main' opponent requested but no model was set.")
+            return OpponentSampler(
+                name="main", policy=MainSelfPlayPolicy(model=self._main_model, device=self.device)
+            )
 
         if entry.kind == "baseline":
             # Use the project's standard baseline factory.

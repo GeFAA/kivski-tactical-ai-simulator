@@ -18,7 +18,6 @@ from kivski_agents.baselines.random_policy import RandomBaseline
 from kivski_agents.baselines.registry import BASELINE_REGISTRY, get_baseline
 from kivski_agents.baselines.scripted import ScriptedHoldBaseline, ScriptedRushBaseline
 
-
 __all__ = [
     "RandomBaseline",
     "ScriptedRushBaseline",

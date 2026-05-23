@@ -27,21 +27,20 @@ exact contract.
 
 from __future__ import annotations
 
+import contextlib
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import torch
+from kivski_sim.config import KivskiConfig
+from kivski_sim.env import agent_index
 
 from kivski_agents.buffer import RolloutBuffer
 from kivski_agents.metrics import CommUsageStats, EpisodeStats
 from kivski_agents.policy_runner import PolicyRunner
 from kivski_agents.training.league import OpponentSampler
 from kivski_agents.training.vec_env import VecEnvWrapper
-from kivski_sim.config import KivskiConfig
-from kivski_sim.env import agent_index
-
 
 __all__ = ["RolloutCollector", "CollectionResult"]
 
@@ -171,6 +170,7 @@ class RolloutCollector:
 
         # Wall-clock timer for FPS reporting.
         import time
+
         t_start = time.perf_counter()
 
         # Pre-allocate per-tick scratch tensors that are written into the buffer.
@@ -185,9 +185,7 @@ class RolloutCollector:
 
             # ---- 2) Stack YELLOW observations across envs --------------
             # Result shape: [N_envs * team_size, obs_dim]
-            yellow_obs_np = np.zeros(
-                (ne * self.team_size, self.obs_dim), dtype=np.float32
-            )
+            yellow_obs_np = np.zeros((ne * self.team_size, self.obs_dim), dtype=np.float32)
             for env_i in range(ne):
                 for agent_j, name in enumerate(self.yellow_names):
                     yellow_obs_np[env_i * self.team_size + agent_j] = obs_batch[name][env_i]
@@ -207,9 +205,9 @@ class RolloutCollector:
                 obs_owner_names=self.yellow_names,
                 payload_dim=cv_dim,
             )
-            received_comm = torch.from_numpy(received_comm_np.reshape(
-                ne * self.team_size, cv_dim
-            )).to(self.device)
+            received_comm = torch.from_numpy(received_comm_np.reshape(ne * self.team_size, cv_dim)).to(
+                self.device
+            )
 
             # ---- 4) Forward training policy ----------------------------
             # The pre-step hidden state is the collector-owned batched tensor
@@ -232,9 +230,7 @@ class RolloutCollector:
             self._batched_hidden = new_hidden  # [L, ne * team_size, H]
 
             # ---- 5) Forward opponent (BLUE) ----------------------------
-            blue_obs_dict = {
-                name: obs_batch[name] for name in self.blue_names
-            }
+            blue_obs_dict = {name: obs_batch[name] for name in self.blue_names}
             blue_actions_np, blue_payloads_np = self._forward_opponent(blue_obs_dict)
 
             # ---- 6) Merge actions / payloads ---------------------------
@@ -269,9 +265,7 @@ class RolloutCollector:
                 per_agent = step_out.infos[env_i].get("per_agent", {})
                 for j, name in enumerate(self.yellow_names):
                     info_for_agent = per_agent.get(name, {})
-                    alive_mask_np[env_i, j] = (
-                        1.0 if bool(info_for_agent.get("alive", True)) else 0.0
-                    )
+                    alive_mask_np[env_i, j] = 1.0 if bool(info_for_agent.get("alive", True)) else 0.0
 
             # Comm masks per agent (we don't have explicit attention masks at this
             # layer; the model uses an internal default). Provide a 1-mask of
@@ -299,9 +293,9 @@ class RolloutCollector:
                 rewards=torch.from_numpy(yellow_rewards_np).to(self.device),
                 masks=torch.from_numpy(alive_mask_np).to(self.device),
                 hidden_states=buffer_hidden,
-                received_comms=torch.from_numpy(
-                    received_comm_np.reshape(ne, self.team_size, cv_dim)
-                ).to(self.device),
+                received_comms=torch.from_numpy(received_comm_np.reshape(ne, self.team_size, cv_dim)).to(
+                    self.device
+                ),
                 comm_masks=torch.from_numpy(comm_masks_np).to(self.device),
             )
 
@@ -310,9 +304,7 @@ class RolloutCollector:
             yellow_comm_actions = yellow_actions_np[:, :, 2].reshape(-1)
             self._comm_counter.update(int(x) for x in yellow_comm_actions.tolist())
             # Mean payload norm (across YELLOW, this tick).
-            payload_norms = np.linalg.norm(
-                yellow_payloads_np.reshape(-1, cv_dim), axis=-1
-            )
+            payload_norms = np.linalg.norm(yellow_payloads_np.reshape(-1, cv_dim), axis=-1)
             self._payload_norm_sum += float(payload_norms.sum())
             self._payload_norm_count += int(payload_norms.shape[0])
 
@@ -326,26 +318,18 @@ class RolloutCollector:
                     for j in range(self.team_size):
                         self._needs_hidden_reset[env_i].add(j)
                     # Also reset the opponent's internal state for this env.
-                    try:
+                    with contextlib.suppress(Exception):
                         self.opponent.reset(self.blue_names)
-                    except Exception:
-                        pass
 
             self._last_step = step_out
 
         # ---- After the loop: build the bootstrap value for GAE ------------
         last_obs_batch = self._last_step.observations
-        last_yellow_obs_np = np.zeros(
-            (ne * self.team_size, self.obs_dim), dtype=np.float32
-        )
+        last_yellow_obs_np = np.zeros((ne * self.team_size, self.obs_dim), dtype=np.float32)
         for env_i in range(ne):
             for agent_j, name in enumerate(self.yellow_names):
-                last_yellow_obs_np[env_i * self.team_size + agent_j] = (
-                    last_obs_batch[name][env_i]
-                )
-        last_joint_obs_np = last_yellow_obs_np.reshape(
-            ne, self.team_size * self.obs_dim
-        )
+                last_yellow_obs_np[env_i * self.team_size + agent_j] = last_obs_batch[name][env_i]
+        last_joint_obs_np = last_yellow_obs_np.reshape(ne, self.team_size * self.obs_dim)
         last_joint_obs = torch.from_numpy(last_joint_obs_np).to(self.device)
         with torch.no_grad():
             last_value = self.runner.model.value_head(last_joint_obs).view(ne).detach()
@@ -353,15 +337,11 @@ class RolloutCollector:
         # Aggregate comm-usage stats.
         total_messages = int(sum(self._comm_counter.values()))
         if total_messages > 0:
-            probs = np.array(
-                [c / total_messages for c in self._comm_counter.values()], dtype=np.float64
-            )
+            probs = np.array([c / total_messages for c in self._comm_counter.values()], dtype=np.float64)
             entropy = float(-(probs * np.log(probs + 1e-12)).sum())
         else:
             entropy = 0.0
-        mean_payload_norm = (
-            self._payload_norm_sum / float(max(self._payload_norm_count, 1))
-        )
+        mean_payload_norm = self._payload_norm_sum / float(max(self._payload_norm_count, 1))
         comm_usage = CommUsageStats(
             counts={int(k): int(v) for k, v in self._comm_counter.items()},
             entropy=float(entropy),
@@ -398,11 +378,11 @@ class RolloutCollector:
 
     def _forward_training_policy(
         self,
-        yellow_obs: torch.Tensor,            # [N_envs * team_size, obs_dim]
-        received_comm: torch.Tensor,         # [N_envs * team_size, cv_dim]
-        joint_obs: torch.Tensor,             # [N_envs, joint_obs_dim]
-        mask: torch.Tensor,                  # [N_envs * team_size]
-        pre_hidden: torch.Tensor,            # [L, N_envs * team_size, H]
+        yellow_obs: torch.Tensor,  # [N_envs * team_size, obs_dim]
+        received_comm: torch.Tensor,  # [N_envs * team_size, cv_dim]
+        joint_obs: torch.Tensor,  # [N_envs, joint_obs_dim]
+        mask: torch.Tensor,  # [N_envs * team_size]
+        pre_hidden: torch.Tensor,  # [L, N_envs * team_size, H]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, torch.Tensor, np.ndarray]:
         """Run the training model over all YELLOW agents across all envs.
 
@@ -423,7 +403,7 @@ class RolloutCollector:
                 obs=yellow_obs,
                 hidden_state=pre_hidden,
                 received_comm=received_comm,
-                joint_obs=None,        # value computed separately on per-env joint obs
+                joint_obs=None,  # value computed separately on per-env joint obs
                 masks=mask,
                 deterministic=False,
             )

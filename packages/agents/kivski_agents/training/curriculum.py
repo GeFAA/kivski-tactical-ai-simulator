@@ -25,7 +25,6 @@ from typing import Any
 
 from kivski_sim.config import CurriculumStage, KivskiConfig
 
-
 __all__ = ["CurriculumManager", "CurriculumState"]
 
 

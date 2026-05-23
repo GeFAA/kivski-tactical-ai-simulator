@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-
 from kivski_sim.combat import (
     compute_damage,
     compute_hit_probability,
@@ -15,14 +14,13 @@ from kivski_sim.economy import ARMOR_COST, apply_buy_choice, kill_reward
 from kivski_sim.rng import RngHub
 from kivski_sim.state import AgentState
 from kivski_sim.types import (
+    WEAPONS,
     BuyChoice,
     MicroAction,
     Side,
     Team,
-    WEAPONS,
     WeaponClass,
 )
-
 
 # ---------------------------------------------------------------------------
 # compute_hit_probability
@@ -33,25 +31,29 @@ def test_hit_probability_decreases_with_distance() -> None:
     weapon = WEAPONS[WeaponClass.RIFLE]
     cfg = CombatConfig()
     near = compute_hit_probability(
-        weapon, distance=5.0,
+        weapon,
+        distance=5.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
     )
     mid = compute_hit_probability(
-        weapon, distance=weapon.optimal_range,
+        weapon,
+        distance=weapon.optimal_range,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
     )
     far = compute_hit_probability(
-        weapon, distance=weapon.max_range - 1.0,
+        weapon,
+        distance=weapon.max_range - 1.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
     )
     out_of_range = compute_hit_probability(
-        weapon, distance=weapon.max_range + 5.0,
+        weapon,
+        distance=weapon.max_range + 5.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
@@ -67,13 +69,15 @@ def test_hit_probability_crouch_increases_chance() -> None:
     weapon = WEAPONS[WeaponClass.RIFLE]
     cfg = CombatConfig()
     p_default = compute_hit_probability(
-        weapon, distance=10.0,
+        weapon,
+        distance=10.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
     )
     p_crouch = compute_hit_probability(
-        weapon, distance=10.0,
+        weapon,
+        distance=10.0,
         attacker_micro=MicroAction.CROUCH_HOLD,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
@@ -85,13 +89,15 @@ def test_hit_probability_sprinting_reduces_chance() -> None:
     weapon = WEAPONS[WeaponClass.RIFLE]
     cfg = CombatConfig()
     p_default = compute_hit_probability(
-        weapon, distance=10.0,
+        weapon,
+        distance=10.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
     )
     p_sprint = compute_hit_probability(
-        weapon, distance=10.0,
+        weapon,
+        distance=10.0,
         attacker_micro=MicroAction.SPRINT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
@@ -103,14 +109,16 @@ def test_hit_probability_through_cover_reduced() -> None:
     weapon = WEAPONS[WeaponClass.RIFLE]
     cfg = CombatConfig()
     p_open = compute_hit_probability(
-        weapon, distance=8.0,
+        weapon,
+        distance=8.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
         through_cover=False,
     )
     p_cover = compute_hit_probability(
-        weapon, distance=8.0,
+        weapon,
+        distance=8.0,
         attacker_micro=MicroAction.DEFAULT,
         target_micro=MicroAction.DEFAULT,
         base_acc_config=cfg,
@@ -151,8 +159,11 @@ def test_damage_through_cover_reduced() -> None:
 def test_damage_zero_at_max_range() -> None:
     weapon = WEAPONS[WeaponClass.RIFLE]
     hp, armor = compute_damage(
-        weapon, distance=weapon.max_range + 0.1,
-        target_armor=0.0, through_cover=False, cover_damage_multiplier=0.55,
+        weapon,
+        distance=weapon.max_range + 0.1,
+        target_armor=0.0,
+        through_cover=False,
+        cover_damage_multiplier=0.55,
     )
     assert hp == 0.0
     assert armor == 0.0

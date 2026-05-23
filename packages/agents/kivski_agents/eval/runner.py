@@ -23,18 +23,18 @@ That matches the standard self-play convention for symmetric games.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-
-from kivski_agents.eval.scenarios import ScenarioSpec, build_scenario
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv, agent_name
 from kivski_sim.map_loader import MapData, load_map
-from kivski_sim.types import MatchOutcome, Phase, RoundOutcome, Team
+from kivski_sim.types import MatchOutcome, RoundOutcome
 
+from kivski_agents.eval.scenarios import ScenarioSpec, build_scenario
 
 __all__ = ["RoundResult", "EvalResult", "EvalRunner"]
 
@@ -50,7 +50,7 @@ class RoundResult:
 
     round_id: int
     winning_side: str  # "attacker" | "defender"
-    outcome: str       # str(RoundOutcome.<NAME>)
+    outcome: str  # str(RoundOutcome.<NAME>)
     duration_ticks: int
     survivors_yellow: int
     survivors_blue: int
@@ -202,14 +202,10 @@ class EvalRunner:
 
             # Per-match policy reset; baselines use this for episode-scoped
             # state like ScriptedRushBaseline's per-agent target site sampling.
-            try:
+            with contextlib.suppress(Exception):
                 policy_yellow.reset(yellow_names)
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 policy_blue.reset(blue_names)
-            except Exception:
-                pass
 
             observations, _infos = env.reset(seed=match_seed)
 
@@ -237,9 +233,7 @@ class EvalRunner:
                         merged_actions, comm_payloads=merged_payloads
                     )
                 else:
-                    observations, _rewards, terminations, truncations, _infos = env.step(
-                        merged_actions
-                    )
+                    observations, _rewards, terminations, truncations, _infos = env.step(merged_actions)
                 done = all(terminations.values()) or all(truncations.values())
                 steps += 1
 

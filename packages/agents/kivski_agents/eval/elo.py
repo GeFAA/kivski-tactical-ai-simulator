@@ -14,10 +14,9 @@ package listed in ``pyproject.toml``). Both expose the same minimal API:
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-
 
 __all__ = ["EloRating", "EloTracker", "TrueSkillTracker"]
 
@@ -118,7 +117,7 @@ class EloTracker:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "EloTracker":
+    def from_dict(cls, data: dict[str, Any]) -> EloTracker:
         """Reconstruct an :class:`EloTracker` from :meth:`to_dict` output."""
         tracker = cls(k_factor=float(data.get("k_factor", 32.0)))
         for name, raw in data.get("ratings", {}).items():
@@ -139,7 +138,7 @@ class EloTracker:
         out.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "EloTracker":
+    def from_json(cls, path: str | Path) -> EloTracker:
         """Load an :class:`EloTracker` previously written by :meth:`to_json`."""
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_dict(data)
@@ -196,9 +195,7 @@ class TrueSkillTracker:
     def add_policy(self, name: str) -> None:
         if name in self.ratings:
             return
-        self.ratings[name] = _TSRating(
-            policy_name=str(name), mu=self._default_mu, sigma=self._default_sigma
-        )
+        self.ratings[name] = _TSRating(policy_name=str(name), mu=self._default_mu, sigma=self._default_sigma)
 
     # ------------------------------------------------------------------
 
@@ -219,7 +216,7 @@ class TrueSkillTracker:
         rb = self._make_rating(b)
         beta = self._env.beta
         delta_mu = ra.mu - rb.mu
-        denom = math.sqrt(2.0 * (beta ** 2) + ra.sigma ** 2 + rb.sigma ** 2)
+        denom = math.sqrt(2.0 * (beta**2) + ra.sigma**2 + rb.sigma**2)
         return 0.5 * (1.0 + math.erf(delta_mu / (denom * math.sqrt(2.0))))
 
     def update(self, a: str, b: str, outcome: float) -> None:
@@ -263,7 +260,7 @@ class TrueSkillTracker:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TrueSkillTracker":
+    def from_dict(cls, data: dict[str, Any]) -> TrueSkillTracker:
         tracker = cls(
             mu=float(data.get("default_mu", 25.0)),
             sigma=float(data.get("default_sigma", 25.0 / 3.0)),
@@ -286,6 +283,6 @@ class TrueSkillTracker:
         out.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
 
     @classmethod
-    def from_json(cls, path: str | Path) -> "TrueSkillTracker":
+    def from_json(cls, path: str | Path) -> TrueSkillTracker:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         return cls.from_dict(data)

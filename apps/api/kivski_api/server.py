@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 
 import uvicorn
-
 from kivski_sim.config import load_config
 
 from kivski_api.app import create_app

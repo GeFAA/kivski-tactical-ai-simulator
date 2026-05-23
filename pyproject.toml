@@ -95,6 +95,18 @@ extend-exclude = ["apps/web", "node_modules", ".venv"]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "TID"]
 ignore = ["E501"]
 
+[tool.ruff.lint.per-file-ignores]
+# Typer uses callable defaults (typer.Argument/Option) by design.
+"scripts/*.py" = ["B008"]
+# Smoke tests gate imports behind pytest.importorskip so module-level imports
+# legitimately appear after statements.
+"tests/smoke/*.py" = ["E402"]
+# ML/torch code uses single-letter capital names (T = time steps, N = batch,
+# L = sequence length, H = hidden dim, F = torch.nn.functional alias) as
+# established mathematical conventions; these are deliberate, not bugs.
+"packages/agents/**/*.py" = ["N803", "N806", "N812", "N814"]
+"tests/unit/test_networks.py" = ["N806"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"

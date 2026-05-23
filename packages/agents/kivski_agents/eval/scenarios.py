@@ -9,17 +9,14 @@ runner picks it up.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import numpy as np
-
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv
 from kivski_sim.map_loader import MapData, load_map
 from kivski_sim.state import BombState
 from kivski_sim.types import BombPhase, Phase, Side
-
 
 __all__ = [
     "ScenarioSpec",
@@ -164,8 +161,7 @@ def _force_plant(env: KivskiParallelEnv, site_name: str) -> None:
     # Transition phase + reset the post-plant timer.
     state.phase = Phase.POST_PLANT
     state.phase_ticks_remaining = int(
-        round(env.engine.config.simulation.bomb_timer_seconds
-              * env.engine.config.simulation.tick_rate_hz)
+        round(env.engine.config.simulation.bomb_timer_seconds * env.engine.config.simulation.tick_rate_hz)
     )
 
 
@@ -197,9 +193,7 @@ def build_scenario(
         final_cfg = _override_team_size(cfg, spec.team_size)
 
     md = map_data if map_data is not None else load_map(map_name)
-    env = KivskiParallelEnv(
-        config=final_cfg, map_name=map_name, seed=int(seed), map_data=md
-    )
+    env = KivskiParallelEnv(config=final_cfg, map_name=map_name, seed=int(seed), map_data=md)
     env.reset(seed=int(seed))
 
     # Apply scenario overrides after reset so the engine is fully initialized.

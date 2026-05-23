@@ -6,20 +6,16 @@ import json
 from pathlib import Path
 
 import pytest
-
 from kivski_agents.baselines import RandomBaseline
 from kivski_agents.eval import (
     ALL_SCENARIOS,
-    EloRating,
     EloTracker,
     EvalRunner,
     ScenarioSpec,
     build_scenario,
 )
 from kivski_sim.config import KivskiConfig
-from kivski_sim.map_loader import load_map
 from kivski_sim.types import BombPhase, Phase, Side
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -71,9 +67,7 @@ def test_elo_winner_gains_rating() -> None:
     assert tracker.ratings["a"].rating > 1000.0
     assert tracker.ratings["b"].rating < 1000.0
     # Symmetric magnitude at parity.
-    assert tracker.ratings["a"].rating - 1000.0 == pytest.approx(
-        1000.0 - tracker.ratings["b"].rating
-    )
+    assert tracker.ratings["a"].rating - 1000.0 == pytest.approx(1000.0 - tracker.ratings["b"].rating)
     # Records updated.
     assert tracker.ratings["a"].wins == 1
     assert tracker.ratings["a"].matches == 1
@@ -170,9 +164,7 @@ def test_eval_runner_random_vs_random_completes(small_cfg: KivskiConfig) -> None
     assert result.scenario == "smoke"
     assert result.num_matches == 1
     # Exactly one match must resolve into win/draw on either side.
-    assert (
-        result.yellow_match_wins + result.blue_match_wins + result.draws == 1
-    )
+    assert result.yellow_match_wins + result.blue_match_wins + result.draws == 1
     # Winrates are in [0, 1].
     assert 0.0 <= result.yellow_winrate <= 1.0
     assert 0.0 <= result.blue_winrate <= 1.0

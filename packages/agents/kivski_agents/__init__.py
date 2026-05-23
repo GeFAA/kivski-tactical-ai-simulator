@@ -20,7 +20,6 @@ from kivski_agents.networks import (
 )
 from kivski_agents.policy_runner import PolicyBundle, PolicyRunner
 
-
 __all__ = [
     "ActorHeads",
     "CommAttention",

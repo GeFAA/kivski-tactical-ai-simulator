@@ -11,7 +11,7 @@ the same Python implementation is used directly so this module always works.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 
@@ -70,8 +70,14 @@ def vec_angle(a: np.ndarray, b: np.ndarray) -> float:
 
 @njit(cache=True, fastmath=True)
 def _seg_intersect(
-    a1x: float, a1y: float, a2x: float, a2y: float,
-    b1x: float, b1y: float, b2x: float, b2y: float,
+    a1x: float,
+    a1y: float,
+    a2x: float,
+    a2y: float,
+    b1x: float,
+    b1y: float,
+    b2x: float,
+    b2y: float,
 ) -> bool:
     """Return True if segment a1-a2 intersects segment b1-b2 (proper or shared point)."""
     rx = a2x - a1x
@@ -90,19 +96,28 @@ def _seg_intersect(
     return (0.0 <= t <= 1.0) and (0.0 <= u <= 1.0)
 
 
-def segment_intersects_segment(
-    a1: np.ndarray, a2: np.ndarray, b1: np.ndarray, b2: np.ndarray
-) -> bool:
+def segment_intersects_segment(a1: np.ndarray, a2: np.ndarray, b1: np.ndarray, b2: np.ndarray) -> bool:
     """Public wrapper around the numba kernel."""
-    return bool(_seg_intersect(
-        float(a1[0]), float(a1[1]), float(a2[0]), float(a2[1]),
-        float(b1[0]), float(b1[1]), float(b2[0]), float(b2[1]),
-    ))
+    return bool(
+        _seg_intersect(
+            float(a1[0]),
+            float(a1[1]),
+            float(a2[0]),
+            float(a2[1]),
+            float(b1[0]),
+            float(b1[1]),
+            float(b2[0]),
+            float(b2[1]),
+        )
+    )
 
 
 @njit(cache=True, fastmath=True)
 def _seg_hits_polygon(
-    sx: float, sy: float, ex: float, ey: float,
+    sx: float,
+    sy: float,
+    ex: float,
+    ey: float,
     poly: np.ndarray,
 ) -> bool:
     """Return True if the segment crosses any edge of the closed polygon ``poly``."""
@@ -114,16 +129,18 @@ def _seg_hits_polygon(
     return False
 
 
-def segment_intersects_polygon(
-    seg_start: np.ndarray, seg_end: np.ndarray, polygon: np.ndarray
-) -> bool:
+def segment_intersects_polygon(seg_start: np.ndarray, seg_end: np.ndarray, polygon: np.ndarray) -> bool:
     """True if the segment crosses any edge of the polygon."""
     poly = np.asarray(polygon, dtype=np.float64)
-    return bool(_seg_hits_polygon(
-        float(seg_start[0]), float(seg_start[1]),
-        float(seg_end[0]), float(seg_end[1]),
-        poly,
-    ))
+    return bool(
+        _seg_hits_polygon(
+            float(seg_start[0]),
+            float(seg_start[1]),
+            float(seg_end[0]),
+            float(seg_end[1]),
+            poly,
+        )
+    )
 
 
 @njit(cache=True, fastmath=True)
@@ -138,10 +155,12 @@ def _point_in_polygon(px: float, py: float, poly: np.ndarray) -> bool:
         xj = poly[j, 0]
         yj = poly[j, 1]
         # boundary fast-path
-        if abs((yj - yi) * (px - xi) - (py - yi) * (xj - xi)) < 1e-9:
-            if min(xi, xj) - 1e-9 <= px <= max(xi, xj) + 1e-9 and \
-               min(yi, yj) - 1e-9 <= py <= max(yi, yj) + 1e-9:
-                return True
+        if (
+            abs((yj - yi) * (px - xi) - (py - yi) * (xj - xi)) < 1e-9
+            and min(xi, xj) - 1e-9 <= px <= max(xi, xj) + 1e-9
+            and min(yi, yj) - 1e-9 <= py <= max(yi, yj) + 1e-9
+        ):
+            return True
         if (yi > py) != (yj > py):
             x_int = (xj - xi) * (py - yi) / (yj - yi + 1e-18) + xi
             if px < x_int:
@@ -175,8 +194,14 @@ def polygons_overlap_aabb(poly_a: np.ndarray, poly_b: np.ndarray) -> bool:
 
 
 def segment_aabb_hit(
-    sx: float, sy: float, ex: float, ey: float,
-    minx: float, miny: float, maxx: float, maxy: float,
+    sx: float,
+    sy: float,
+    ex: float,
+    ey: float,
+    minx: float,
+    miny: float,
+    maxx: float,
+    maxy: float,
 ) -> bool:
     """Liang-Barsky-style early-out: does segment touch the polygon AABB at all?"""
     seg_minx = min(sx, ex)
@@ -192,8 +217,10 @@ def segment_aabb_hit(
 
 
 def circle_segment_distance(
-    circle_center: np.ndarray, radius: float,
-    seg_start: np.ndarray, seg_end: np.ndarray,
+    circle_center: np.ndarray,
+    radius: float,
+    seg_start: np.ndarray,
+    seg_end: np.ndarray,
 ) -> float:
     """Shortest distance between a circle's edge and a segment (negative if overlap)."""
     cx, cy = float(circle_center[0]), float(circle_center[1])
@@ -220,7 +247,11 @@ def circle_segment_distance(
 
 
 def _segment_polygon_hit_t(
-    sx: float, sy: float, ex: float, ey: float, poly: np.ndarray,
+    sx: float,
+    sy: float,
+    ex: float,
+    ey: float,
+    poly: np.ndarray,
 ) -> float:
     """Return the smallest t in [0,1] where segment hits any edge; -1.0 if none."""
     best = 2.0
@@ -242,9 +273,8 @@ def _segment_polygon_hit_t(
         qmpy = y1 - sy
         t = (qmpx * sy2 - qmpy * sx2) / denom
         u = (qmpx * ry - qmpy * rx) / denom
-        if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
-            if t < best:
-                best = t
+        if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0 and t < best:
+            best = t
     return best if best <= 1.0 else -1.0
 
 

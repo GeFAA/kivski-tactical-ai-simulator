@@ -38,6 +38,7 @@ from kivski_sim.config import KivskiConfig
 from kivski_sim.engine import Engine, Snapshot
 from kivski_sim.map_loader import MapData, load_map
 from kivski_sim.types import (
+    WEAPONS,
     ActionBundle,
     BombPhase,
     BuyChoice,
@@ -48,11 +49,9 @@ from kivski_sim.types import (
     Phase,
     Side,
     Team,
-    WEAPONS,
     WeaponClass,
 )
 from kivski_sim.visibility import DEFAULT_FOV_RADIANS, compute_fov, sound_audible
-
 
 __all__ = ["KivskiParallelEnv", "agent_name", "agent_index"]
 
@@ -61,10 +60,10 @@ __all__ = ["KivskiParallelEnv", "agent_name", "agent_index"]
 _NUM_WEAPONS: int = len(WeaponClass)
 
 # Stable enum sizes used for action / sound encoding.
-_NUM_MOVE_INTENTS: int = len(MoveIntent)        # 9
-_NUM_MICRO_ACTIONS: int = len(MicroAction)      # 6
-_NUM_COMM_ACTIONS: int = len(CommAction)        # 9
-_NUM_BUY_OPTIONS: int = len(BuyChoice)          # 8
+_NUM_MOVE_INTENTS: int = len(MoveIntent)  # 9
+_NUM_MICRO_ACTIONS: int = len(MicroAction)  # 6
+_NUM_COMM_ACTIONS: int = len(CommAction)  # 9
+_NUM_BUY_OPTIONS: int = len(BuyChoice)  # 8
 
 # Sound-event kind ids used in the observation packing.
 _SOUND_KINDS: dict[str, int] = {
@@ -109,7 +108,7 @@ class _LastKnownEnemy:
     """One entry in an agent's "last known enemy" memory."""
 
     enemy_id: int
-    last_pos: np.ndarray              # shape (2,) float32
+    last_pos: np.ndarray  # shape (2,) float32
     last_tick: int
     last_weapon: WeaponClass
     was_alive: bool
@@ -132,7 +131,7 @@ class _ReceivedMessage:
 
     tick: int
     sender_id: int
-    sender_team_idx: int     # 0..team_size-1 index within the agent's team
+    sender_team_idx: int  # 0..team_size-1 index within the agent's team
     action: CommAction
     pos: tuple[float, float] | None
     payload: np.ndarray | None
@@ -160,13 +159,13 @@ class _AgentMemory:
 
 
 # Per-slot widths (kept here, mirrored in obs_decoder for reproducibility).
-_SELF_BLOCK_WIDTH: int = 7 + _NUM_WEAPONS                 # 14 when _NUM_WEAPONS=7
+_SELF_BLOCK_WIDTH: int = 7 + _NUM_WEAPONS  # 14 when _NUM_WEAPONS=7
 _SELF_POS_WIDTH: int = 3
 _TEAMMATE_SLOT_WIDTH: int = 8
 _ENEMY_SLOT_WIDTH: int = 6
 _SOUND_SLOT_WIDTH: int = 5
 _MESSAGE_SLOT_WIDTH: int = 7
-_MAP_CTX_WIDTH: int = 6 + _NUM_PHASES_OBS                 # 10
+_MAP_CTX_WIDTH: int = 6 + _NUM_PHASES_OBS  # 10
 _TEAM_CTX_WIDTH: int = 6
 
 
@@ -698,13 +697,9 @@ class KivskiParallelEnv(ParallelEnv):
         teammates_alive = sum(
             1
             for other in self._engine.state.agents
-            if other.team == self_state.team
-            and other.agent_id != self_state.agent_id
-            and other.alive
+            if other.team == self_state.team and other.agent_id != self_state.agent_id and other.alive
         )
-        enemies_alive_known = sum(
-            1 for entry in mem.last_known.values() if entry.was_alive
-        )
+        enemies_alive_known = sum(1 for entry in mem.last_known.values() if entry.was_alive)
         bomb_phase_val = int(self._engine.state.bomb.phase) / float(max(len(BombPhase) - 1, 1))
         max_rounds = max(1, int(self._cfg.simulation.max_rounds))
         my_team = self_state.team
@@ -805,9 +800,7 @@ class KivskiParallelEnv(ParallelEnv):
             sender_state = state.agents[sender_aid]
             # Compute the sender's intra-team index for the receiver-side feature.
             sender_idx = sum(
-                1
-                for other in state.agents
-                if other.team == sender_state.team and other.agent_id < sender_aid
+                1 for other in state.agents if other.team == sender_state.team and other.agent_id < sender_aid
             )
             payload = msg.payload
             for rid in msg.receivers:
@@ -852,7 +845,7 @@ class KivskiParallelEnv(ParallelEnv):
         for name in self._possible_agents:
             comm_msgs = dict(self._latest_comm_messages[name])
             mask = np.zeros(2 * self._team_size, dtype=np.float32)
-            for sender_id in comm_msgs.keys():
+            for sender_id in comm_msgs:
                 # Mask is indexed by global agent id for simplicity (callers
                 # can re-key it if they prefer team-local indices).
                 if 0 <= sender_id < mask.shape[0]:
@@ -889,7 +882,7 @@ class KivskiParallelEnv(ParallelEnv):
 
     def _compute_truncations(self) -> dict[str, bool]:
         # We do not artificially truncate -- the engine drives match length.
-        return {name: False for name in self._possible_agents}
+        return dict.fromkeys(self._possible_agents, False)
 
     # ------------------------------------------------------------------
     # Internal: reward computation
@@ -936,7 +929,7 @@ class KivskiParallelEnv(ParallelEnv):
         factor = float(self._shaping_factor) * (1.0 if rs.enabled else 0.0)
         dt = 1.0 / float(self._cfg.simulation.tick_rate_hz)
 
-        rewards: dict[str, float] = {name: 0.0 for name in self._possible_agents}
+        rewards: dict[str, float] = dict.fromkeys(self._possible_agents, 0.0)
         # Forward outcome rewards from engine, scaled.
         for aid, r in engine_rewards.items():
             rewards[agent_name(int(aid))] = float(r)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from kivski_agents.baselines import (
     BASELINE_REGISTRY,
     RandomBaseline,
@@ -15,8 +14,7 @@ from kivski_agents.baselines import (
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv
 from kivski_sim.map_loader import load_map
-from kivski_sim.types import BuyChoice, CommAction, MicroAction, MoveIntent
-
+from kivski_sim.types import MoveIntent
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,9 +47,7 @@ def small_cfg() -> KivskiConfig:
 
 @pytest.fixture
 def env(small_cfg: KivskiConfig) -> KivskiParallelEnv:
-    return KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=1234, map_data=load_map("dustline")
-    )
+    return KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=1234, map_data=load_map("dustline"))
 
 
 # ---------------------------------------------------------------------------
@@ -98,9 +94,7 @@ def test_random_baseline_reproducible_with_seed(env: KivskiParallelEnv) -> None:
     c.reset(list(obs.keys()))
     actions_c, _ = c.act(obs)
     # Probabilistically extremely unlikely to fully match for non-trivial dims.
-    any_diff = any(
-        not np.array_equal(actions_a[name], actions_c[name]) for name in actions_a
-    )
+    any_diff = any(not np.array_equal(actions_a[name], actions_c[name]) for name in actions_a)
     assert any_diff
 
 

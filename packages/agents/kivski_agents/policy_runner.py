@@ -32,10 +32,9 @@ from typing import Any
 
 import numpy as np
 import torch
-
-from kivski_agents.networks.actor_critic import KivskiActorCritic
 from kivski_sim.config import KivskiConfig
 
+from kivski_agents.networks.actor_critic import KivskiActorCritic
 
 __all__ = ["PolicyBundle", "PolicyRunner"]
 
@@ -135,9 +134,7 @@ class PolicyRunner:
                 continue
             arr = np.asarray(vec, dtype=np.float32).reshape(-1)
             if arr.shape[0] != obs_dim:
-                raise ValueError(
-                    f"observation for {name!r} has length {arr.shape[0]}, expected {obs_dim}"
-                )
+                raise ValueError(f"observation for {name!r} has length {arr.shape[0]}, expected {obs_dim}")
             obs_batch[self._agent_to_index[name]] = arr
 
         # Build per-agent received-comm vector. We do *not* run the attention
@@ -157,8 +154,7 @@ class PolicyRunner:
                     arr = np.asarray(payload, dtype=np.float32).reshape(-1)
                     if arr.shape[0] != comm_value_dim:
                         raise ValueError(
-                            f"comm payload for {name!r} has length {arr.shape[0]}, "
-                            f"expected {comm_value_dim}"
+                            f"comm payload for {name!r} has length {arr.shape[0]}, expected {comm_value_dim}"
                         )
                     payloads.append(arr)
                 if payloads:
@@ -216,7 +212,7 @@ class PolicyBundle:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_checkpoint(cls, path: str | Path) -> "PolicyBundle":
+    def from_checkpoint(cls, path: str | Path) -> PolicyBundle:
         """Load a checkpoint saved by :meth:`MAPPOTrainer.save`."""
         ckpt_path = Path(path)
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -227,9 +223,7 @@ class PolicyBundle:
         # Backwards-compatible: try to infer model_init from the state dict
         # shapes if it was not stored.
         if not model_init:
-            raise ValueError(
-                f"Checkpoint {ckpt_path} is missing 'model_init'; cannot reconstruct model."
-            )
+            raise ValueError(f"Checkpoint {ckpt_path} is missing 'model_init'; cannot reconstruct model.")
         return cls(
             model_state=dict(ckpt["model"]),
             model_init=model_init,
@@ -288,7 +282,7 @@ class PolicyBundle:
         model: KivskiActorCritic,
         cfg: KivskiConfig,
         metadata: dict[str, Any] | None = None,
-    ) -> "PolicyBundle":
+    ) -> PolicyBundle:
         """Build a bundle from a live model + config (for inline snapshots)."""
         try:
             cfg_dict = cfg.model_dump()

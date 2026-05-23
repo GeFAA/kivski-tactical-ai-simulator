@@ -156,7 +156,9 @@ class EvalScenario(_Frozen):
 
 
 class EvaluationConfig(_Frozen):
-    baselines: list[str] = Field(default_factory=lambda: ["random", "scripted_rush", "scripted_hold", "frozen_latest"])
+    baselines: list[str] = Field(
+        default_factory=lambda: ["random", "scripted_rush", "scripted_hold", "frozen_latest"]
+    )
     scenarios: list[EvalScenario] = Field(default_factory=list)
     matches_per_scenario: int = 20
 

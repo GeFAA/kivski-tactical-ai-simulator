@@ -19,12 +19,11 @@ the engine state.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-
-from kivski_agents.metrics import EpisodeStats
 from kivski_sim.config import KivskiConfig
 from kivski_sim.engine import Snapshot
 from kivski_sim.env import KivskiParallelEnv, agent_index, agent_name
@@ -32,6 +31,7 @@ from kivski_sim.map_loader import MapData, load_map
 from kivski_sim.types import MatchOutcome, RoundOutcome, Team
 from kivski_sim.utils import now_unix
 
+from kivski_agents.metrics import EpisodeStats
 
 __all__ = ["VecEnvWrapper", "VecEnvStep"]
 
@@ -146,9 +146,7 @@ class VecEnvWrapper:
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
         # Per-env accumulators for episode_stats.
-        self._acc: list[_EpisodeAccumulator] = [
-            _EpisodeAccumulator(episode=0) for _ in range(self.num_envs)
-        ]
+        self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator(episode=0) for _ in range(self.num_envs)]
         # Initial observation buffer for the very first reset.
         self._current_obs: dict[str, np.ndarray] | None = None
         self._current_infos: list[dict[str, Any]] | None = None
@@ -170,8 +168,7 @@ class VecEnvWrapper:
     def reset(self) -> VecEnvStep:
         """Reset every env in the batch."""
         obs_batch: dict[str, np.ndarray] = {
-            name: np.zeros((self.num_envs, self.obs_dim), dtype=np.float32)
-            for name in self.agent_names
+            name: np.zeros((self.num_envs, self.obs_dim), dtype=np.float32) for name in self.agent_names
         }
         infos: list[dict[str, Any]] = []
         for i, env in enumerate(self.envs):
@@ -217,8 +214,7 @@ class VecEnvWrapper:
 
         # Allocate output batches.
         obs_batch: dict[str, np.ndarray] = {
-            name: np.zeros((self.num_envs, self.obs_dim), dtype=np.float32)
-            for name in self.agent_names
+            name: np.zeros((self.num_envs, self.obs_dim), dtype=np.float32) for name in self.agent_names
         }
         infos: list[dict[str, Any]] = []
 
@@ -304,7 +300,7 @@ class VecEnvWrapper:
             raise IndexError(f"env_idx {env_idx} out of range [0, {self.num_envs})")
         return self.envs[env_idx].render()
 
-    def current_step(self) -> "VecEnvStep | None":
+    def current_step(self) -> VecEnvStep | None:
         """Return the last step's batched payload (or ``None`` if never stepped).
 
         Useful when a fresh consumer (e.g. a new :class:`RolloutCollector`) wants
@@ -328,12 +324,10 @@ class VecEnvWrapper:
     def close(self) -> None:
         """Release every wrapped env."""
         for env in self.envs:
-            try:
+            # The engine has no I/O to clean up; we just want to be
+            # tolerant of partial state during shutdown.
+            with contextlib.suppress(Exception):
                 env.close()
-            except Exception:
-                # The engine has no I/O to clean up; we just want to be
-                # tolerant of partial state during shutdown.
-                pass
 
     # ------------------------------------------------------------------
     # Side / team helpers
@@ -358,11 +352,14 @@ class VecEnvWrapper:
         # Combine the base seed with the env and episode index in a way
         # that is stable across runs and avoids collisions on the first
         # few episodes (where ``episode * num_envs`` could repeat).
-        return int(
-            (int(self._base_seed) & 0x7FFF_FFFF)
-            ^ ((int(env_idx) + 1) * 0x9E37_79B9)
-            ^ ((int(episode) + 1) * 0x85EB_CA77)
-        ) & 0x7FFF_FFFF
+        return (
+            int(
+                (int(self._base_seed) & 0x7FFF_FFFF)
+                ^ ((int(env_idx) + 1) * 0x9E37_79B9)
+                ^ ((int(episode) + 1) * 0x85EB_CA77)
+            )
+            & 0x7FFF_FFFF
+        )
 
     @staticmethod
     def _alive_map(env: KivskiParallelEnv) -> dict[int, bool]:
@@ -398,11 +395,7 @@ class VecEnvWrapper:
             sum(1 for s in summaries if RoundOutcome(int(s.outcome)) == RoundOutcome.BOMB_DEFUSED)
         )
         bombs_detonated = int(
-            sum(
-                1
-                for s in summaries
-                if RoundOutcome(int(s.outcome)) == RoundOutcome.BOMB_DETONATED
-            )
+            sum(1 for s in summaries if RoundOutcome(int(s.outcome)) == RoundOutcome.BOMB_DETONATED)
         )
         acc = self._acc[env_idx]
         return EpisodeStats(

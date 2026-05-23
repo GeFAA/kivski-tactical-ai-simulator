@@ -18,6 +18,7 @@ Design goals:
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import os
 import threading
@@ -27,7 +28,6 @@ from pathlib import Path
 from typing import Any
 
 from kivski_sim.utils import ensure_dir, now_unix
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -188,13 +188,15 @@ class CSVSink(TelemetrySink):
     def log_hyperparams(self, hparams: dict[str, Any]) -> None:
         if self._closed:
             return
-        with self._lock:
-            # Hyperparams are rewritten in full (small, written once-ish).
-            with self.hparams_path.open("w", encoding="utf-8", newline="") as fh:
-                writer = csv.writer(fh)
-                writer.writerow(["key", "value"])
-                for k, v in sorted(hparams.items()):
-                    writer.writerow([str(k), str(v)])
+        # Hyperparams are rewritten in full (small, written once-ish).
+        with (
+            self._lock,
+            self.hparams_path.open("w", encoding="utf-8", newline="") as fh,
+        ):
+            writer = csv.writer(fh)
+            writer.writerow(["key", "value"])
+            for k, v in sorted(hparams.items()):
+                writer.writerow([str(k), str(v)])
 
     def flush(self) -> None:
         with self._lock:
@@ -259,9 +261,7 @@ class TensorBoardSink(TelemetrySink):
             self._writer.add_hparams(flat, {})
         except Exception:  # pragma: no cover - tb internals are picky
             # Fallback: dump as text so the data isn't lost.
-            self._writer.add_text(
-                "hparams", "\n".join(f"{k}={v}" for k, v in flat.items()), 0
-            )
+            self._writer.add_text("hparams", "\n".join(f"{k}={v}" for k, v in flat.items()), 0)
 
     def flush(self) -> None:
         if self._closed:
@@ -492,18 +492,13 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
     if key == "all":
         sinks: list[TelemetrySink] = [CSVSink(log_path, run_name)]
         # TensorBoard is "best effort" in "all" mode.
-        try:
+        with contextlib.suppress(ImportError):
             sinks.append(TensorBoardSink(log_path, run_name))
-        except ImportError:
-            pass
         # W&B too.
-        try:
+        with contextlib.suppress(ImportError):
             sinks.append(WandbSink(log_path, run_name))
-        except ImportError:
-            pass
         return MultiSink(sinks)
 
     raise ValueError(
-        f"Unknown telemetry backend {backend!r}. "
-        "Expected one of: csv, tensorboard, wandb, all, none."
+        f"Unknown telemetry backend {backend!r}. Expected one of: csv, tensorboard, wandb, all, none."
     )

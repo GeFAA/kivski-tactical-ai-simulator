@@ -8,11 +8,11 @@ baseline class explicitly).
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from kivski_agents.baselines.random_policy import RandomBaseline
 from kivski_agents.baselines.scripted import ScriptedHoldBaseline, ScriptedRushBaseline
-
 
 __all__ = ["BASELINE_REGISTRY", "get_baseline"]
 
@@ -22,9 +22,7 @@ _BaselineFactory = Callable[[Any, Any, int], Any]
 
 
 BASELINE_REGISTRY: dict[str, _BaselineFactory] = {
-    "random": lambda env, map_data, seed: RandomBaseline(
-        env.action_space("agent_0"), seed
-    ),
+    "random": lambda env, map_data, seed: RandomBaseline(env.action_space("agent_0"), seed),
     "scripted_hold": lambda env, map_data, seed: ScriptedHoldBaseline(
         env.action_space("agent_0"), map_data, seed
     ),
@@ -49,7 +47,5 @@ def get_baseline(name: str, env: Any, map_data: Any, seed: int = 0) -> Any:
         ValueError: If ``name`` is not in :data:`BASELINE_REGISTRY`.
     """
     if name not in BASELINE_REGISTRY:
-        raise ValueError(
-            f"Unknown baseline {name!r}. Available: {sorted(BASELINE_REGISTRY)}"
-        )
+        raise ValueError(f"Unknown baseline {name!r}. Available: {sorted(BASELINE_REGISTRY)}")
     return BASELINE_REGISTRY[name](env, map_data, int(seed))

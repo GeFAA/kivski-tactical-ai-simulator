@@ -5,8 +5,6 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pytest
-
 from kivski_sim.geometry import (
     circle_segment_distance,
     point_in_polygon,
@@ -17,15 +15,14 @@ from kivski_sim.geometry import (
     vec_angle,
     vec_distance,
 )
-from kivski_sim.map_loader import MapData, NamedArea, Obstacle
+from kivski_sim.map_loader import MapData, Obstacle
+from kivski_sim.types import Side
 from kivski_sim.visibility import (
     DEFAULT_FOV_RADIANS,
     compute_fov,
     compute_los,
     sound_audible,
 )
-from kivski_sim.types import Side
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -185,14 +182,18 @@ def test_polygons_overlap_aabb():
 def test_circle_segment_distance():
     # Segment along x axis, circle right above the midpoint, radius 1
     d = circle_segment_distance(
-        np.array([5.0, 2.0]), 1.0,
-        np.array([0.0, 0.0]), np.array([10.0, 0.0]),
+        np.array([5.0, 2.0]),
+        1.0,
+        np.array([0.0, 0.0]),
+        np.array([10.0, 0.0]),
     )
     assert math.isclose(d, 1.0, abs_tol=1e-6)
     # Now overlapping (circle radius 3 -> distance to segment 0 is 2, minus 3 = -1)
     d2 = circle_segment_distance(
-        np.array([5.0, 2.0]), 3.0,
-        np.array([0.0, 0.0]), np.array([10.0, 0.0]),
+        np.array([5.0, 2.0]),
+        3.0,
+        np.array([0.0, 0.0]),
+        np.array([10.0, 0.0]),
     )
     assert d2 < 0.0
 
@@ -250,19 +251,31 @@ def test_sound_attenuation_with_distance():
     md = _build_map(walls=[])
     rng = np.random.default_rng(42)
     heard_near, near_str, _ = sound_audible(
-        md, np.array([0.0, 0.0]), np.array([2.0, 0.0]),
-        sound_intensity=1.0, sound_radius=20.0, rng=rng,
+        md,
+        np.array([0.0, 0.0]),
+        np.array([2.0, 0.0]),
+        sound_intensity=1.0,
+        sound_radius=20.0,
+        rng=rng,
     )
     heard_far, far_str, _ = sound_audible(
-        md, np.array([0.0, 0.0]), np.array([18.0, 0.0]),
-        sound_intensity=1.0, sound_radius=20.0, rng=rng,
+        md,
+        np.array([0.0, 0.0]),
+        np.array([18.0, 0.0]),
+        sound_intensity=1.0,
+        sound_radius=20.0,
+        rng=rng,
     )
     assert heard_near
     assert near_str > far_str
     # Beyond radius -> inaudible
     heard_out, _, _ = sound_audible(
-        md, np.array([0.0, 0.0]), np.array([25.0, 0.0]),
-        sound_intensity=1.0, sound_radius=20.0, rng=rng,
+        md,
+        np.array([0.0, 0.0]),
+        np.array([25.0, 0.0]),
+        sound_intensity=1.0,
+        sound_radius=20.0,
+        rng=rng,
     )
     assert not heard_out
 
@@ -272,12 +285,20 @@ def test_sound_passes_through_walls_but_attenuates():
     walled_map = _build_map(walls=[_wall(4, -1, 6, 1)])
     rng = np.random.default_rng(0)
     _, s_open, _ = sound_audible(
-        open_map, np.array([0.0, 0.0]), np.array([10.0, 0.0]),
-        sound_intensity=1.0, sound_radius=20.0, rng=rng,
+        open_map,
+        np.array([0.0, 0.0]),
+        np.array([10.0, 0.0]),
+        sound_intensity=1.0,
+        sound_radius=20.0,
+        rng=rng,
     )
     _, s_walled, _ = sound_audible(
-        walled_map, np.array([0.0, 0.0]), np.array([10.0, 0.0]),
-        sound_intensity=1.0, sound_radius=20.0, rng=rng,
+        walled_map,
+        np.array([0.0, 0.0]),
+        np.array([10.0, 0.0]),
+        sound_intensity=1.0,
+        sound_radius=20.0,
+        rng=rng,
     )
     assert s_walled < s_open  # wall attenuates the sound path
 
@@ -294,9 +315,9 @@ def test_fov_cone_filters_correctly():
     # DEFAULT_FOV is 144 degrees -> half-angle 72 degrees. So a target 90deg
     # off-axis is OUTSIDE the cone; a target 60deg off-axis is INSIDE.
     targets = [
-        (1, np.array([10.0, 5.0])),                            # 0deg  -> in
-        (2, np.array([0.0, 5.0])),                             # 180deg -> out
-        (3, np.array([5.0, 0.0])),                             # 90deg up -> out
+        (1, np.array([10.0, 5.0])),  # 0deg  -> in
+        (2, np.array([0.0, 5.0])),  # 180deg -> out
+        (3, np.array([5.0, 0.0])),  # 90deg up -> out
         (4, np.array([10.0, 5.0 - math.tan(math.radians(60)) * 5.0])),  # 60deg up -> in
         (5, np.array([10.0, 5.0 + math.tan(math.radians(60)) * 5.0])),  # 60deg down -> in
     ]
@@ -314,8 +335,8 @@ def test_fov_narrow_cone_excludes_sides():
     facing = 0.0
     narrow = math.pi / 6  # 30 degrees total
     targets = [
-        (1, np.array([10.0, 5.0])),   # straight ahead -- visible
-        (2, np.array([10.0, 9.0])),   # off-axis -- excluded
+        (1, np.array([10.0, 5.0])),  # straight ahead -- visible
+        (2, np.array([10.0, 9.0])),  # off-axis -- excluded
     ]
     visible = compute_fov(md, origin, facing, narrow, max_range=30.0, all_targets=targets)
     assert visible == [1]

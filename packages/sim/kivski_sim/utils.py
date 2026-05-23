@@ -6,6 +6,7 @@ triggering large transitive imports.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -127,16 +128,12 @@ def write_json_atomic(path: str | os.PathLike[str], data: Any) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(payload)
             fh.flush()
-            try:
+            # Some platforms / mock filesystems don't support fsync.
+            with contextlib.suppress(OSError):
                 os.fsync(fh.fileno())
-            except OSError:
-                # Some platforms / mock filesystems don't support fsync.
-                pass
     except Exception:
         # Best-effort cleanup of the temp file.
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
     os.replace(tmp, target)

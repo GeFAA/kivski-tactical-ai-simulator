@@ -24,7 +24,6 @@ from kivski_sim.geometry import (
 )
 from kivski_sim.map_loader import MapData, Obstacle
 
-
 # ---------------------------------------------------------------------------
 # Line of Sight
 # ---------------------------------------------------------------------------
@@ -77,7 +76,7 @@ def compute_los(
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_FOV_RADIANS = math.pi * 0.8   # ~144 degrees, fits the 2D top-down style
+DEFAULT_FOV_RADIANS = math.pi * 0.8  # ~144 degrees, fits the 2D top-down style
 
 
 def _angular_diff(a: float, b: float) -> float:
@@ -124,9 +123,9 @@ def compute_fov(
 # ---------------------------------------------------------------------------
 
 
-_COVER_LOW_ATTENUATION = 0.85    # low cover barely muffles
-_WALL_ATTENUATION = 0.55         # solid walls muffle a lot (but do not block)
-_MIN_AUDIBLE_STRENGTH = 0.04     # below this the listener simply hears nothing
+_COVER_LOW_ATTENUATION = 0.85  # low cover barely muffles
+_WALL_ATTENUATION = 0.55  # solid walls muffle a lot (but do not block)
+_MIN_AUDIBLE_STRENGTH = 0.04  # below this the listener simply hears nothing
 
 
 def _sound_attenuation(map_data: MapData, listener: np.ndarray, source: np.ndarray) -> float:
@@ -222,6 +221,7 @@ def raycast_grid_sample(
                 continue
             # If this sample is inside a sight-blocking polygon, we hit it.
             from kivski_sim.geometry import point_in_polygon
+
             if point_in_polygon(p, poly):
                 return True, p.copy(), t * dist
     # Fallback to exact raycast for final answer when no grid sample landed inside.

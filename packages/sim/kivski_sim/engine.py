@@ -37,6 +37,8 @@ from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame, ReplayWriter
 from kivski_sim.rng import RngHub
 from kivski_sim.state import AgentState, BombState, MatchState, TeamState
 from kivski_sim.types import (
+    MOVE_VECTORS,
+    WEAPONS,
     ActionBundle,
     AgentId,
     BombPhase,
@@ -46,7 +48,6 @@ from kivski_sim.types import (
     MatchOutcome,
     Message,
     MicroAction,
-    MOVE_VECTORS,
     MoveIntent,
     Phase,
     RoundOutcome,
@@ -54,11 +55,9 @@ from kivski_sim.types import (
     Side,
     SoundEvent,
     Team,
-    WEAPONS,
     WeaponClass,
 )
 from kivski_sim.visibility import DEFAULT_FOV_RADIANS, compute_fov, compute_los
-
 
 __all__ = ["Engine", "EngineConfig", "Snapshot"]
 
@@ -88,7 +87,7 @@ _FOOTSTEP_INTENSITY: dict[MicroAction, float] = {
 }
 
 _BOMB_PICKUP_DISTANCE: float = 0.8
-_INTERACT_RADIUS: float = 0.5    # max distance from carrier for plant/defuse stop checks
+_INTERACT_RADIUS: float = 0.5  # max distance from carrier for plant/defuse stop checks
 _AGENT_RADIUS: float = 0.30
 
 
@@ -122,7 +121,7 @@ class EngineConfig:
         cfg: KivskiConfig,
         map_data: MapData,
         max_rounds: int | None = None,
-    ) -> "EngineConfig":
+    ) -> EngineConfig:
         ec = cls(cfg=cfg, map_data=map_data)
         if max_rounds is not None:
             ec.max_rounds = int(max_rounds)
@@ -741,12 +740,8 @@ class Engine:
                     self._state.bomb.carrier = -1
                     self._state.bomb.pos = np.array(target.pos, dtype=np.float32)
                 # Reward shaping for training: small per-kill bonus to the attacker.
-                rewards[AgentId(int(agent.agent_id))] = (
-                    rewards.get(AgentId(int(agent.agent_id)), 0.0) + 1.0
-                )
-                rewards[AgentId(int(target.agent_id))] = (
-                    rewards.get(AgentId(int(target.agent_id)), 0.0) - 1.0
-                )
+                rewards[AgentId(int(agent.agent_id))] = rewards.get(AgentId(int(agent.agent_id)), 0.0) + 1.0
+                rewards[AgentId(int(target.agent_id))] = rewards.get(AgentId(int(target.agent_id)), 0.0) - 1.0
             self._tick_events.append(
                 CombatEvent(
                     tick=int(self._state.tick),
@@ -804,11 +799,7 @@ class Engine:
                 return
             ab = actions.get(int(carrier.agent_id))
             site = self._map.is_in_bombsite(carrier.pos.astype(np.float64))
-            if (
-                ab is not None
-                and ab.micro == MicroAction.INTERACT
-                and site is not None
-            ):
+            if ab is not None and ab.micro == MicroAction.INTERACT and site is not None:
                 bomb.phase = BombPhase.PLANTING
                 bomb.plant_progress += self._engine_cfg.dt / max(
                     1e-3, float(self._cfg.simulation.plant_time_seconds)
@@ -855,9 +846,7 @@ class Engine:
     ) -> None:
         """During post-plant, attackers can still fight; defenders may defuse."""
         # Movement + combat are the same as LIVE (re-use the LIVE handlers).
-        prev_positions = {
-            int(a.agent_id): a.pos.copy() for a in self._state.agents if a.alive
-        }
+        prev_positions = {int(a.agent_id): a.pos.copy() for a in self._state.agents if a.alive}
         for agent in self._state.agents:
             if not agent.alive:
                 continue
@@ -982,12 +971,8 @@ class Engine:
             bomb_planted=self._state.bomb.site is not None,
             bomb_planted_site=self._state.bomb.site,
             duration_ticks=int(self._state.tick),
-            survivors_yellow=sum(
-                1 for a in self._state.agents if a.alive and a.team == Team.YELLOW
-            ),
-            survivors_blue=sum(
-                1 for a in self._state.agents if a.alive and a.team == Team.BLUE
-            ),
+            survivors_yellow=sum(1 for a in self._state.agents if a.alive and a.team == Team.YELLOW),
+            survivors_blue=sum(1 for a in self._state.agents if a.alive and a.team == Team.BLUE),
         )
         self._state.round_summaries.append(summary)
         self._state.last_round_outcome = outcome
@@ -1069,11 +1054,12 @@ class Engine:
     def _reset_for_new_round(self) -> None:
         # Reset all agents to spawns, fresh HP/armor (armor lost unless bought
         # again next buy phase), keep money & weapon.
-        size = int(self._cfg.simulation.team_size)
-        for team, side in ((Team.YELLOW, self._state.teams[Team.YELLOW].side),
-                            (Team.BLUE, self._state.teams[Team.BLUE].side)):
-            idx = 0
-            for a in self._state.agents_on_team(team):
+        int(self._cfg.simulation.team_size)
+        for team, side in (
+            (Team.YELLOW, self._state.teams[Team.YELLOW].side),
+            (Team.BLUE, self._state.teams[Team.BLUE].side),
+        ):
+            for idx, a in enumerate(self._state.agents_on_team(team)):
                 spawn = self._map.nearest_spawn(side, idx)
                 a.pos = np.array(spawn, dtype=np.float32)
                 a.vel = np.zeros(2, dtype=np.float32)
@@ -1090,7 +1076,6 @@ class Engine:
                 a.reaction_cooldown = 0
                 # V1 simplification: weapon persists, but defuse kit doesn't.
                 a.has_defuse_kit = False
-                idx += 1
         self._assign_bomb_random(self._state)
         self._state.phase = Phase.BUY
         self._state.phase_ticks_remaining = int(
@@ -1190,9 +1175,7 @@ class Engine:
             "kind": str(snd.kind),
         }
 
-    def _build_action_frame(
-        self, actions: dict[int, ActionBundle]
-    ) -> ReplayActionFrame:
+    def _build_action_frame(self, actions: dict[int, ActionBundle]) -> ReplayActionFrame:
         rows: list[dict[str, Any]] = []
         for aid, ab in sorted(actions.items()):
             rows.append(

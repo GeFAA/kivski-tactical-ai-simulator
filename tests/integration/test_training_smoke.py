@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-
 torch = pytest.importorskip("torch")
 
 
@@ -25,7 +24,6 @@ from kivski_agents.telemetry import NoOpSink  # noqa: E402
 from kivski_agents.training.curriculum import CurriculumManager  # noqa: E402
 from kivski_agents.training.trainer import Trainer, TrainerConfig  # noqa: E402
 from kivski_sim.config import KivskiConfig  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixture: tiny config + trainer
@@ -258,7 +256,9 @@ def test_trainer_full_iteration(tmp_path: Path) -> None:
     trainer.env_steps += result.total_env_steps
     for stats in result.episode_stats:
         assert isinstance(stats, EpisodeStats)
-        trainer.league.update_elo("main", outcome=0.5 if stats.winner == "draw" else 1.0 if stats.winner == "yellow" else 0.0)
+        trainer.league.update_elo(
+            "main", outcome=0.5 if stats.winner == "draw" else 1.0 if stats.winner == "yellow" else 0.0
+        )
     assert trainer.update_step == initial_update + 1
     assert trainer.env_steps > 0
     trainer.vec_env.close()

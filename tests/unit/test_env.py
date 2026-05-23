@@ -19,7 +19,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from gymnasium import spaces
-
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv, agent_index, agent_name
 from kivski_sim.map_loader import load_map
@@ -33,7 +32,6 @@ from kivski_sim.types import (
     Side,
     Team,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -66,9 +64,7 @@ def small_cfg() -> KivskiConfig:
 
 @pytest.fixture
 def env(small_cfg: KivskiConfig) -> KivskiParallelEnv:
-    return KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=1234, map_data=load_map("dustline")
-    )
+    return KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=1234, map_data=load_map("dustline"))
 
 
 def _hold_actions(env: KivskiParallelEnv) -> dict[str, np.ndarray]:
@@ -82,9 +78,7 @@ def _hold_actions(env: KivskiParallelEnv) -> dict[str, np.ndarray]:
 
 
 def test_env_creates_correct_agent_count(small_cfg: KivskiConfig) -> None:
-    env = KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=1, map_data=load_map("dustline")
-    )
+    env = KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=1, map_data=load_map("dustline"))
     n = 2 * int(small_cfg.simulation.team_size)
     assert len(env.possible_agents) == n
     assert env.possible_agents == [f"agent_{i}" for i in range(n)]
@@ -156,6 +150,7 @@ def test_reset_clears_last_known(env: KivskiParallelEnv) -> None:
     name = "agent_0"
     mem = env._memory[name]
     from kivski_sim.env import _LastKnownEnemy
+
     mem.last_known[99] = _LastKnownEnemy(
         enemy_id=99,
         last_pos=np.zeros(2, dtype=np.float32),
@@ -172,9 +167,7 @@ def test_reset_clears_last_known(env: KivskiParallelEnv) -> None:
 
 def test_last_known_updates_when_enemy_in_fov(small_cfg: KivskiConfig) -> None:
     """Place two opposing agents in open space and verify last_known fills."""
-    env = KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=2025, map_data=load_map("dustline")
-    )
+    env = KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=2025, map_data=load_map("dustline"))
     env.reset(seed=2025)
     # The dustline map has an open corridor along x=30 in the centre.
     open_pos_a = np.array([30.0, 19.0], dtype=np.float32)
@@ -206,9 +199,7 @@ def test_last_known_updates_when_enemy_in_fov(small_cfg: KivskiConfig) -> None:
 
 def test_round_outcome_assigns_rewards_correctly(small_cfg: KivskiConfig) -> None:
     """When the engine ends a round the wrapper must forward its +/-1 rewards."""
-    env = KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=7, map_data=load_map("dustline")
-    )
+    env = KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=7, map_data=load_map("dustline"))
     env.reset(seed=7)
     # Disable shaping so only the outcome reward survives.
     env.set_shaping_factor(0.0)
@@ -226,20 +217,14 @@ def test_round_outcome_assigns_rewards_correctly(small_cfg: KivskiConfig) -> Non
     _, rewards, _terms, _, _ = env.step(actions)
     # Attackers get +1, defenders get -1 from the engine's _end_round path,
     # routed through the wrapper -- side mapping captured pre-step.
-    attacker_rewards = [
-        rewards[agent_name(aid)] for aid, side in side_by_id.items() if side == Side.ATTACKER
-    ]
-    defender_rewards = [
-        rewards[agent_name(aid)] for aid, side in side_by_id.items() if side == Side.DEFENDER
-    ]
+    attacker_rewards = [rewards[agent_name(aid)] for aid, side in side_by_id.items() if side == Side.ATTACKER]
+    defender_rewards = [rewards[agent_name(aid)] for aid, side in side_by_id.items() if side == Side.DEFENDER]
     assert all(r >= 1.0 for r in attacker_rewards)
     assert all(r <= -1.0 for r in defender_rewards)
 
 
 def test_terminations_when_match_over(small_cfg: KivskiConfig) -> None:
-    env = KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=99, map_data=load_map("dustline")
-    )
+    env = KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=99, map_data=load_map("dustline"))
     env.reset(seed=99)
     # Push the yellow team to the win threshold (needed = max_rounds//2 + 1).
     needed = int(small_cfg.simulation.max_rounds) // 2 + 1

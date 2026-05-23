@@ -36,7 +36,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-
 __all__ = ["CommAttention", "CommEncoder", "CommGate"]
 
 
@@ -104,13 +103,10 @@ class CommEncoder(nn.Module):
                 * ``value``:    raw   ``[B, value_dim]`` tensor.
         """
         if hidden.dim() != 2:
-            raise ValueError(
-                f"CommEncoder expects [B, input_dim], got shape {tuple(hidden.shape)}"
-            )
+            raise ValueError(f"CommEncoder expects [B, input_dim], got shape {tuple(hidden.shape)}")
         if hidden.shape[-1] != self.input_dim:
             raise ValueError(
-                f"CommEncoder input dim mismatch: expected {self.input_dim}, "
-                f"got {hidden.shape[-1]}"
+                f"CommEncoder input dim mismatch: expected {self.input_dim}, got {hidden.shape[-1]}"
             )
 
         h = self.trunk(hidden)
@@ -159,9 +155,7 @@ class CommGate(nn.Module):
                   ``(0, 1)``; in eval mode a hard ``{0, 1}`` indicator.
         """
         if hidden.dim() != 2:
-            raise ValueError(
-                f"CommGate expects [B, input_dim], got shape {tuple(hidden.shape)}"
-            )
+            raise ValueError(f"CommGate expects [B, input_dim], got shape {tuple(hidden.shape)}")
         gate_logits = self.gate(hidden)
         if self.training:
             # Differentiable Bernoulli via Gumbel-Sigmoid.
@@ -216,13 +210,9 @@ class CommAttention(nn.Module):
         if num_heads <= 0:
             raise ValueError(f"num_heads must be positive, got {num_heads}")
         if signature_dim % num_heads != 0:
-            raise ValueError(
-                f"signature_dim ({signature_dim}) must be divisible by num_heads ({num_heads})"
-            )
+            raise ValueError(f"signature_dim ({signature_dim}) must be divisible by num_heads ({num_heads})")
         if value_dim % num_heads != 0:
-            raise ValueError(
-                f"value_dim ({value_dim}) must be divisible by num_heads ({num_heads})"
-            )
+            raise ValueError(f"value_dim ({value_dim}) must be divisible by num_heads ({num_heads})")
 
         self.signature_dim: int = int(signature_dim)
         self.value_dim: int = int(value_dim)
@@ -260,17 +250,11 @@ class CommAttention(nn.Module):
                   mask, the weight tensor is all zeros.
         """
         if query.dim() != 2 or query.shape[-1] != self.signature_dim:
-            raise ValueError(
-                f"query must be [B, {self.signature_dim}], got {tuple(query.shape)}"
-            )
+            raise ValueError(f"query must be [B, {self.signature_dim}], got {tuple(query.shape)}")
         if sigs.dim() != 3 or sigs.shape[-1] != self.signature_dim:
-            raise ValueError(
-                f"sigs must be [B, N, {self.signature_dim}], got {tuple(sigs.shape)}"
-            )
+            raise ValueError(f"sigs must be [B, N, {self.signature_dim}], got {tuple(sigs.shape)}")
         if vals.dim() != 3 or vals.shape[-1] != self.value_dim:
-            raise ValueError(
-                f"vals must be [B, N, {self.value_dim}], got {tuple(vals.shape)}"
-            )
+            raise ValueError(f"vals must be [B, N, {self.value_dim}], got {tuple(vals.shape)}")
         if mask.dim() != 2:
             raise ValueError(f"mask must be [B, N], got {tuple(mask.shape)}")
         if sigs.shape[0] != query.shape[0] or sigs.shape[1] != mask.shape[1]:

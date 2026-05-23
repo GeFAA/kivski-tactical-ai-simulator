@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv
 from kivski_sim.map_loader import load_map
@@ -60,9 +59,7 @@ def _run_one_match(seed: int, map_data, cfg: KivskiConfig) -> tuple[bool, list[R
     env = KivskiParallelEnv(config=cfg, map_name="dustline", seed=seed, map_data=map_data)
     obs, _ = env.reset(seed=seed)
     rng = np.random.default_rng(seed)
-    max_steps = (
-        int(cfg.simulation.max_ticks_per_round) * int(cfg.simulation.max_rounds) + 200
-    )
+    max_steps = int(cfg.simulation.max_ticks_per_round) * int(cfg.simulation.max_rounds) + 200
     for _ in range(max_steps):
         actions = _random_action_dict(env, rng)
         obs, rewards, terms, truncs, infos = env.step(actions)
@@ -120,9 +117,7 @@ def test_random_match_50_iterations_sanity() -> None:
 
 def test_env_reset_after_done_is_clean() -> None:
     cfg = _make_config()
-    env = KivskiParallelEnv(
-        config=cfg, map_name="dustline", seed=123, map_data=load_map("dustline")
-    )
+    env = KivskiParallelEnv(config=cfg, map_name="dustline", seed=123, map_data=load_map("dustline"))
     env.reset(seed=123)
     rng = np.random.default_rng(123)
     for _ in range(1500):

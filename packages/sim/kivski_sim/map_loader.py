@@ -50,7 +50,7 @@ class Obstacle(NamedTuple):
     aabb: tuple[float, float, float, float]
     blocks_movement: bool
     blocks_sight: bool
-    low: bool                 # low cover: blocks bullets but lets sound / vision through
+    low: bool  # low cover: blocks bullets but lets sound / vision through
 
 
 class NamedArea(NamedTuple):
@@ -72,7 +72,7 @@ class MapData:
     width: int
     height: int
     tile_size: float
-    spawns: dict[Side, np.ndarray]                  # Side -> (5, 2) float array
+    spawns: dict[Side, np.ndarray]  # Side -> (5, 2) float array
     bombsites: dict[str, Bombsite]
     walls: list[Obstacle]
     cover: list[Obstacle]
@@ -97,9 +97,9 @@ class MapData:
             if point_in_polygon(p, ob.polygon):
                 return True
         # also out-of-bounds counts as blocked
-        if not (0.0 <= float(p[0]) <= float(self.width) and 0.0 <= float(p[1]) <= float(self.height)):
-            return True
-        return False
+        return bool(
+            not (0.0 <= float(p[0]) <= float(self.width) and 0.0 <= float(p[1]) <= float(self.height))
+        )
 
     def is_in_bombsite(self, pos: np.ndarray) -> str | None:
         """Return the bombsite name (``"A"``/``"B"``) containing ``pos`` else ``None``."""

@@ -23,11 +23,11 @@ remove it from the subscriber set so future broadcasts skip it cleanly.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
 from kivski_sim.utils import now_unix
 
 from kivski_api.session import REGISTRY
@@ -77,10 +77,8 @@ async def match_websocket(websocket: WebSocket, match_id: str) -> None:
         _LOG.info("WS disconnected from match %s", match_id)
     except Exception:
         _LOG.exception("WS error for match %s", match_id)
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close(code=1011)
-        except Exception:
-            pass
     finally:
         session.subscribers.discard(websocket)
 

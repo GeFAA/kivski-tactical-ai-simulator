@@ -1,7 +1,7 @@
 """Kivski simulation package: deterministic top-down 5v5 bomb-defuse engine."""
 
 try:  # engine arrives in a later task; tolerate its absence so the rest of the
-      # package (types, map_loader, geometry, visibility) stays importable.
+    # package (types, map_loader, geometry, visibility) stays importable.
     from kivski_sim.engine import Engine, EngineConfig, Snapshot  # noqa: F401
 except ModuleNotFoundError:  # pragma: no cover
     Engine = None  # type: ignore[assignment]
@@ -9,8 +9,8 @@ except ModuleNotFoundError:  # pragma: no cover
     Snapshot = None  # type: ignore[assignment]
 
 try:  # pettingzoo/gymnasium are optional at the package level so that
-      # downstream code that only needs the engine can import kivski_sim
-      # without pulling in the full RL stack.
+    # downstream code that only needs the engine can import kivski_sim
+    # without pulling in the full RL stack.
     from kivski_sim.env import KivskiParallelEnv  # noqa: F401
 except ModuleNotFoundError:  # pragma: no cover
     KivskiParallelEnv = None  # type: ignore[assignment]

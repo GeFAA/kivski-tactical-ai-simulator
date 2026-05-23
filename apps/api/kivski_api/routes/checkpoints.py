@@ -9,6 +9,7 @@ API restarts.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -97,10 +98,8 @@ async def delete_checkpoint(name: str) -> Response:
         raise HTTPException(status_code=500, detail=f"unable to delete: {exc}") from exc
     sidecar = path.with_suffix(".json")
     if sidecar.is_file():
-        try:
+        with contextlib.suppress(OSError):
             sidecar.unlink()
-        except OSError:
-            pass
     if REGISTRY.loaded_checkpoint == path.stem:
         REGISTRY.loaded_checkpoint = None
     return Response(status_code=204)

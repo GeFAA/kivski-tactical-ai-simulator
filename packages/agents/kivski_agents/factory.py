@@ -15,11 +15,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import torch
+from kivski_sim.config import KivskiConfig, MLConfig
 
 from kivski_agents.mappo import MAPPOTrainer
 from kivski_agents.networks.actor_critic import KivskiActorCritic
-from kivski_sim.config import KivskiConfig, MLConfig
-
 
 __all__ = [
     "build_model",

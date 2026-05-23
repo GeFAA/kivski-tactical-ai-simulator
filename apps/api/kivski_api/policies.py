@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-
 from kivski_sim.types import (
     ActionBundle,
     BuyChoice,
@@ -61,10 +60,10 @@ class PolicyAdapter(ABC):
         """Compute an action for every agent id present in ``observations``."""
         raise NotImplementedError
 
-    def reset(self) -> None:
+    def reset(self) -> None:  # noqa: B027 - intentional no-op default; subclasses opt in.
         """Reset any internal recurrent state. Default is a no-op."""
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027 - intentional no-op default; subclasses opt in.
         """Release any held resources (e.g. torch tensors). Default no-op."""
 
 
@@ -91,7 +90,7 @@ class RandomPolicy(PolicyAdapter):
         observations: dict[int, np.ndarray] | dict[int, dict[str, Any]],
     ) -> dict[int, ActionBundle]:
         out: dict[int, ActionBundle] = {}
-        for agent_id in observations.keys():
+        for agent_id in observations:
             move = MoveIntent(int(self._rng.integers(0, len(MoveIntent))))
             micro = MicroAction(int(self._rng.integers(0, len(MicroAction))))
             # Avoid spamming INTERACT (it freezes the agent in place) -- only
@@ -133,7 +132,7 @@ class HoldPositionPolicy(PolicyAdapter):
         self,
         observations: dict[int, np.ndarray] | dict[int, dict[str, Any]],
     ) -> dict[int, ActionBundle]:
-        return {int(aid): ActionBundle() for aid in observations.keys()}
+        return {int(aid): ActionBundle() for aid in observations}
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +170,7 @@ class CheckpointPolicy(PolicyAdapter):
             )
             return
         if not self.path.is_file():
-            _LOG.warning(
-                "Checkpoint file %s missing -- falling back to RandomPolicy", self.path
-            )
+            _LOG.warning("Checkpoint file %s missing -- falling back to RandomPolicy", self.path)
             return
         try:
             self._model = torch.load(str(self.path), map_location="cpu", weights_only=False)

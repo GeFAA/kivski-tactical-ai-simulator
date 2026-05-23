@@ -27,7 +27,6 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-
 __all__ = ["RolloutBatch", "RolloutBuffer"]
 
 
@@ -44,16 +43,16 @@ class RolloutBatch:
     ``BS = minibatch_size`` (or less for the trailing partial batch).
     """
 
-    observations: Tensor       # [BS, obs_dim]
-    joint_observations: Tensor # [BS, joint_obs_dim]
-    actions: Tensor            # [BS, n_heads]
-    old_log_probs: Tensor      # [BS]
-    old_values: Tensor         # [BS]
-    returns: Tensor            # [BS]
-    advantages: Tensor         # [BS]
-    masks: Tensor              # [BS]
-    hidden_states: Tensor      # [num_layers, BS, hidden_size]
-    received_comms: Tensor     # [BS, comm_value_dim]
+    observations: Tensor  # [BS, obs_dim]
+    joint_observations: Tensor  # [BS, joint_obs_dim]
+    actions: Tensor  # [BS, n_heads]
+    old_log_probs: Tensor  # [BS]
+    old_values: Tensor  # [BS]
+    returns: Tensor  # [BS]
+    advantages: Tensor  # [BS]
+    masks: Tensor  # [BS]
+    hidden_states: Tensor  # [num_layers, BS, hidden_size]
+    received_comms: Tensor  # [BS, comm_value_dim]
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +121,14 @@ class RolloutBuffer:
 
         # Per-agent tensors -- [T, N_envs, n_agents, ...]
         self.observations = torch.zeros(self.T, self.N_envs, self.n_agents, self.obs_dim, device=d)
-        self.actions = torch.zeros(self.T, self.N_envs, self.n_agents, self.n_heads, dtype=torch.int64, device=d)
+        self.actions = torch.zeros(
+            self.T, self.N_envs, self.n_agents, self.n_heads, dtype=torch.int64, device=d
+        )
         self.log_probs = torch.zeros(self.T, self.N_envs, self.n_agents, device=d)
         self.rewards = torch.zeros(self.T, self.N_envs, self.n_agents, device=d)
         self.masks = torch.zeros(self.T, self.N_envs, self.n_agents, device=d)
-        self.received_comms = torch.zeros(
-            self.T, self.N_envs, self.n_agents, self.comm_value_dim, device=d
-        )
-        self.comm_masks = torch.zeros(
-            self.T, self.N_envs, self.n_agents, self.n_teammates, device=d
-        )
+        self.received_comms = torch.zeros(self.T, self.N_envs, self.n_agents, self.comm_value_dim, device=d)
+        self.comm_masks = torch.zeros(self.T, self.N_envs, self.n_agents, self.n_teammates, device=d)
         # Hidden state is "pre-step" -- one slot per (T, N_envs, n_agents).
         self.hidden_states = torch.zeros(
             self.T, self.gru_layers, self.N_envs, self.n_agents, self.hidden_size, device=d
@@ -187,9 +184,7 @@ class RolloutBuffer:
         def _check(t: Tensor, name: str, expected: tuple[int, ...]) -> Tensor:
             t = t.to(self.device)
             if tuple(t.shape) != expected:
-                raise ValueError(
-                    f"{name} has shape {tuple(t.shape)}, expected {expected}"
-                )
+                raise ValueError(f"{name} has shape {tuple(t.shape)}, expected {expected}")
             return t
 
         self.observations[step] = _check(
@@ -198,21 +193,13 @@ class RolloutBuffer:
         self.joint_observations[step] = _check(
             joint_obs.to(torch.float32), "joint_obs", (ne, self.joint_obs_dim)
         )
-        self.actions[step] = _check(
-            actions.to(torch.int64), "actions", (ne, na, self.n_heads)
-        )
-        self.log_probs[step] = _check(
-            log_probs.to(torch.float32), "log_probs", (ne, na)
-        )
+        self.actions[step] = _check(actions.to(torch.int64), "actions", (ne, na, self.n_heads))
+        self.log_probs[step] = _check(log_probs.to(torch.float32), "log_probs", (ne, na))
         # Value may arrive as [N_envs] or [N_envs, 1]; squeeze.
         v = value.to(self.device, torch.float32).view(ne)
         self.values[step] = v
-        self.rewards[step] = _check(
-            rewards.to(torch.float32), "rewards", (ne, na)
-        )
-        self.masks[step] = _check(
-            masks.to(torch.float32), "masks", (ne, na)
-        )
+        self.rewards[step] = _check(rewards.to(torch.float32), "rewards", (ne, na))
+        self.masks[step] = _check(masks.to(torch.float32), "masks", (ne, na))
         self.received_comms[step] = _check(
             received_comms.to(torch.float32),
             "received_comms",
@@ -348,18 +335,8 @@ class RolloutBuffer:
             .expand(t_max, ne, na, self.joint_obs_dim)
             .reshape(flat_count, self.joint_obs_dim)
         )
-        values_per_agent = (
-            self.values[:t_max]
-            .unsqueeze(-1)
-            .expand(t_max, ne, na)
-            .reshape(flat_count)
-        )
-        returns_per_agent = (
-            self.returns[:t_max]
-            .unsqueeze(-1)
-            .expand(t_max, ne, na)
-            .reshape(flat_count)
-        )
+        values_per_agent = self.values[:t_max].unsqueeze(-1).expand(t_max, ne, na).reshape(flat_count)
+        returns_per_agent = self.returns[:t_max].unsqueeze(-1).expand(t_max, ne, na).reshape(flat_count)
         del rewards_flat  # not needed in the batch -- kept for symmetry above
 
         # Indices.

@@ -10,14 +10,13 @@ from __future__ import annotations
 from kivski_sim.config import EconomyConfig
 from kivski_sim.state import AgentState, MatchState, TeamState
 from kivski_sim.types import (
+    WEAPONS,
     BuyChoice,
     RoundOutcome,
     Side,
     Team,
-    WEAPONS,
     WeaponClass,
 )
-
 
 __all__ = [
     "ARMOR_COST",

@@ -15,7 +15,6 @@ import numpy as np
 from kivski_sim.config import CombatConfig
 from kivski_sim.types import MicroAction, WeaponStats
 
-
 __all__ = [
     "compute_hit_probability",
     "compute_damage",

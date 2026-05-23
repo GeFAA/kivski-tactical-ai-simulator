@@ -23,14 +23,14 @@ on the config it passes to the vec env.
 
 from __future__ import annotations
 
-import json
-import time
-from dataclasses import dataclass, field
+import contextlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
+from kivski_sim.config import KivskiConfig
 
 from kivski_agents.buffer import RolloutBuffer
 from kivski_agents.eval.runner import EvalResult, EvalRunner
@@ -51,8 +51,6 @@ from kivski_agents.training.curriculum import CurriculumManager
 from kivski_agents.training.league import LeagueManager
 from kivski_agents.training.rollout_collector import RolloutCollector
 from kivski_agents.training.vec_env import VecEnvWrapper
-from kivski_sim.config import KivskiConfig
-
 
 __all__ = ["TrainerConfig", "Trainer"]
 
@@ -110,9 +108,7 @@ class Trainer:
 
         # 1) Curriculum stage -> effective config.
         self.curriculum: CurriculumManager = CurriculumManager(cfg)
-        self.active_cfg: KivskiConfig = self._cfg_with_safety_overrides(
-            self.curriculum.current_config()
-        )
+        self.active_cfg: KivskiConfig = self._cfg_with_safety_overrides(self.curriculum.current_config())
 
         # 2) Vec env.
         self.vec_env: VecEnvWrapper = VecEnvWrapper(
@@ -172,11 +168,9 @@ class Trainer:
             self.load_checkpoint(Path(tcfg.resume_from))
 
         # 8) Telemetry hyperparams.
-        try:
+        # Telemetry hiccups must not block training.
+        with contextlib.suppress(Exception):
             self.telemetry.log_hyperparams(self._hyperparam_dump())
-        except Exception:
-            # Telemetry hiccups must not block training.
-            pass
 
         # Misc: an internal RNG for opponent sampling.
         self._rng: np.random.Generator = np.random.default_rng(int(self.active_cfg.seed) + 31337)
@@ -279,10 +273,8 @@ class Trainer:
                 self.episode_count += 0  # explicit no-op for clarity
 
         # Final flush.
-        try:
+        with contextlib.suppress(Exception):
             self.telemetry.flush()
-        except Exception:
-            pass
 
     # ------------------------------------------------------------------
     # Evaluation hook
@@ -303,6 +295,7 @@ class Trainer:
         )
         # YELLOW = main, BLUE = baseline.
         from kivski_agents.training.league import MainSelfPlayPolicy  # local
+
         main = MainSelfPlayPolicy(model=self.model, device=self.device)
 
         results: dict[str, EvalResult] = {}
@@ -391,21 +384,11 @@ class Trainer:
         """Update league Elo from per-episode outcomes + log per-episode metrics."""
         for stats in episode_stats:
             # The training side is YELLOW in our setup.
-            outcome = (
-                1.0 if stats.winner == "yellow"
-                else 0.0 if stats.winner == "blue"
-                else 0.5
-            )
-            try:
+            outcome = 1.0 if stats.winner == "yellow" else 0.0 if stats.winner == "blue" else 0.5
+            with contextlib.suppress(Exception):
                 self.league.update_elo(opponent_name=opponent_name, outcome=outcome)
-            except Exception:
-                pass
-            try:
-                self.telemetry.log_dict(
-                    episode_stats_to_dict(stats), step=self.update_step
-                )
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                self.telemetry.log_dict(episode_stats_to_dict(stats), step=self.update_step)
 
     def _log_step(
         self,
@@ -477,7 +460,7 @@ class Trainer:
     def _log_eval_results(self, results: dict[str, EvalResult]) -> None:
         """Forward eval results to telemetry sinks."""
         for name, res in results.items():
-            try:
+            with contextlib.suppress(Exception):
                 self.telemetry.log_dict(
                     {
                         f"eval/{name}/yellow_winrate": float(res.yellow_winrate),
@@ -487,8 +470,6 @@ class Trainer:
                     },
                     step=self.update_step,
                 )
-            except Exception:
-                pass
 
     def _handle_stage_flip(self) -> None:
         """Rebuild env / model when curriculum advances to a new stage."""
@@ -529,9 +510,7 @@ class Trainer:
             device=self.device,
         )
         self.mappo = build_trainer(self.model, self.active_cfg, device=self.device)
-        self.training_runner = PolicyRunner(
-            model=self.model, device=self.device, deterministic=False
-        )
+        self.training_runner = PolicyRunner(model=self.model, device=self.device, deterministic=False)
         self.buffer = RolloutBuffer(
             T=int(self.tcfg.rollout_steps),
             N_envs=int(self.tcfg.num_envs),
@@ -553,9 +532,7 @@ class Trainer:
     def _cfg_with_safety_overrides(cfg: KivskiConfig) -> KivskiConfig:
         """Disable side-switching during training and clamp anything dangerous."""
         raw = cfg.model_dump()
-        raw.setdefault("simulation", {})["side_switch_round"] = max(
-            int(cfg.simulation.max_rounds) + 1, 999
-        )
+        raw.setdefault("simulation", {})["side_switch_round"] = max(int(cfg.simulation.max_rounds) + 1, 999)
         return KivskiConfig.model_validate(raw)
 
     def _resolve_eval_scenario(self, name: str) -> ScenarioSpec:

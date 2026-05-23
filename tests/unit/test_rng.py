@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-
 from kivski_sim.rng import KNOWN_CHANNELS, RngHub
 
 
@@ -50,15 +49,9 @@ def test_snapshot_restore_recovers_state() -> None:
     # Build a fresh hub from the snapshot and replay the tail.
     restored = RngHub(seed=999)  # deliberately different seed -- restore overrides
     restored.restore(snap)
-    np.testing.assert_array_equal(
-        restored.channel("combat").standard_normal(10), expected_combat
-    )
-    np.testing.assert_array_equal(
-        restored.channel("spawn").integers(0, 100, size=10), expected_spawn
-    )
-    np.testing.assert_array_equal(
-        restored.channel("sound").random(10), expected_sound
-    )
+    np.testing.assert_array_equal(restored.channel("combat").standard_normal(10), expected_combat)
+    np.testing.assert_array_equal(restored.channel("spawn").integers(0, 100, size=10), expected_spawn)
+    np.testing.assert_array_equal(restored.channel("sound").random(10), expected_sound)
     assert restored.seed == 123
 
 

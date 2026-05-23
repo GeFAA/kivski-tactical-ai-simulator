@@ -119,9 +119,7 @@ class RngHub:
         """
         return {
             "seed": self._seed,
-            "channels": {
-                name: gen.bit_generator.state for name, gen in self._channels.items()
-            },
+            "channels": {name: gen.bit_generator.state for name, gen in self._channels.items()},
         }
 
     def restore(self, snap: dict) -> None:

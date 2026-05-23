@@ -18,7 +18,6 @@ import numpy as np
 from kivski_sim.config import KivskiConfig
 from kivski_sim.types import WeaponClass
 
-
 __all__ = [
     "OBSERVATION_SECTION_NAMES",
     "build_observation_schema",

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from kivski_agents.metrics import (
     CommUsageStats,
     EpisodeStats,
@@ -34,7 +33,6 @@ from kivski_agents.telemetry import (
     TelemetrySink,
     make_sink,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -117,15 +115,11 @@ def test_csv_sink_writes_text_and_hparams(tmp_path: Path) -> None:
     sink.log_hyperparams({"lr": 3e-4, "gamma": 0.99})
     sink.close()
 
-    text_rows = list(
-        csv.DictReader((tmp_path / "run03" / "text.csv").open("r", encoding="utf-8"))
-    )
+    text_rows = list(csv.DictReader((tmp_path / "run03" / "text.csv").open("r", encoding="utf-8")))
     assert len(text_rows) == 1
     assert text_rows[0]["text"] == "hello world"
 
-    hp_rows = list(
-        csv.DictReader((tmp_path / "run03" / "hparams.csv").open("r", encoding="utf-8"))
-    )
+    hp_rows = list(csv.DictReader((tmp_path / "run03" / "hparams.csv").open("r", encoding="utf-8")))
     seen = {r["key"]: r["value"] for r in hp_rows}
     assert seen == {"lr": "0.0003", "gamma": "0.99"}
 

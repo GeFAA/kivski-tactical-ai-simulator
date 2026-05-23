@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-
 from kivski_sim.map_loader import list_maps
 
 router = APIRouter(prefix="/api/maps", tags=["maps"])

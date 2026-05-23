@@ -20,7 +20,6 @@ from kivski_agents.eval.elo import EloRating, EloTracker, TrueSkillTracker
 from kivski_agents.eval.runner import EvalResult, EvalRunner, RoundResult
 from kivski_agents.eval.scenarios import ALL_SCENARIOS, EvalScenario, ScenarioSpec, build_scenario
 
-
 __all__ = [
     "EvalScenario",
     "ScenarioSpec",

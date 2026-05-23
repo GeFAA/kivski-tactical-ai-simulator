@@ -32,11 +32,9 @@ from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 
 from kivski_agents.networks.comm import CommAttention, CommEncoder, CommGate
-
 
 __all__ = [
     "ActorHeads",
@@ -259,9 +257,7 @@ class ActorHeads(nn.Module):
                   detached from the sampled action itself.)
         """
         if hidden.dim() != 2 or hidden.shape[-1] != self.hidden_size:
-            raise ValueError(
-                f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}"
-            )
+            raise ValueError(f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}")
         b = hidden.shape[0]
         device = hidden.device
 
@@ -270,16 +266,10 @@ class ActorHeads(nn.Module):
         entropy_sum = torch.zeros(b, device=device)
         prev_embeddings: list[Tensor] = []
         for i, (head, emb) in enumerate(zip(self.heads, self.embeddings, strict=False)):
-            if prev_embeddings:
-                head_in = torch.cat([hidden, *prev_embeddings], dim=-1)
-            else:
-                head_in = hidden
+            head_in = torch.cat([hidden, *prev_embeddings], dim=-1) if prev_embeddings else hidden
             logits = head(head_in)
             dist = torch.distributions.Categorical(logits=logits)
-            if deterministic:
-                act = logits.argmax(dim=-1)
-            else:
-                act = dist.sample()
+            act = logits.argmax(dim=-1) if deterministic else dist.sample()
             actions[:, i] = act
             log_prob_sum = log_prob_sum + dist.log_prob(act)
             entropy_sum = entropy_sum + dist.entropy()
@@ -305,23 +295,16 @@ class ActorHeads(nn.Module):
             ``(log_probs, entropy)`` each shape ``[B]``.
         """
         if hidden.dim() != 2 or hidden.shape[-1] != self.hidden_size:
-            raise ValueError(
-                f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}"
-            )
+            raise ValueError(f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}")
         if actions.dim() != 2 or actions.shape[1] != self.num_heads:
-            raise ValueError(
-                f"actions must be [B, num_heads={self.num_heads}], got {tuple(actions.shape)}"
-            )
+            raise ValueError(f"actions must be [B, num_heads={self.num_heads}], got {tuple(actions.shape)}")
         b = hidden.shape[0]
         log_prob_sum = torch.zeros(b, device=hidden.device)
         entropy_sum = torch.zeros(b, device=hidden.device)
         prev_embeddings: list[Tensor] = []
         actions_long = actions.detach().to(torch.int64)
         for i, (head, emb) in enumerate(zip(self.heads, self.embeddings, strict=False)):
-            if prev_embeddings:
-                head_in = torch.cat([hidden, *prev_embeddings], dim=-1)
-            else:
-                head_in = hidden
+            head_in = torch.cat([hidden, *prev_embeddings], dim=-1) if prev_embeddings else hidden
             logits = head(head_in)
             dist = torch.distributions.Categorical(logits=logits)
             # Use out-of-place ``clamp`` so we don't mutate a tensor that may
@@ -355,13 +338,10 @@ class ValueHead(nn.Module):
     def forward(self, joint_obs: Tensor) -> Tensor:
         """Return ``[B, 1]`` value estimates for ``joint_obs``."""
         if joint_obs.dim() != 2:
-            raise ValueError(
-                f"ValueHead expects [B, joint_obs_dim], got {tuple(joint_obs.shape)}"
-            )
+            raise ValueError(f"ValueHead expects [B, joint_obs_dim], got {tuple(joint_obs.shape)}")
         if joint_obs.shape[-1] != self.joint_obs_dim:
             raise ValueError(
-                f"ValueHead joint_obs_dim mismatch: expected {self.joint_obs_dim}, "
-                f"got {joint_obs.shape[-1]}"
+                f"ValueHead joint_obs_dim mismatch: expected {self.joint_obs_dim}, got {joint_obs.shape[-1]}"
             )
         return self.net(joint_obs)
 
@@ -532,9 +512,7 @@ class KivskiActorCritic(nn.Module):
             * ``value`` (optional) ``[B, 1]`` if ``joint_obs`` is provided
         """
         actor_hidden, new_hidden = self._forward_core(obs, hidden_state, received_comm, masks=masks)
-        actions, log_probs, entropy = self.actor_heads.sample(
-            actor_hidden, deterministic=deterministic
-        )
+        actions, log_probs, entropy = self.actor_heads.sample(actor_hidden, deterministic=deterministic)
         sig, val = self.comm_encoder(actor_hidden)
         gate_logits, gate_open = self.comm_gate(actor_hidden, temperature=self.gumbel_temp)
         payload = val * gate_open

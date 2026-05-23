@@ -158,7 +158,7 @@ class ReplayWriter:
 
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "ReplayWriter":
+    def __enter__(self) -> ReplayWriter:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -218,14 +218,11 @@ class ReplayReader:
         except StopIteration as exc:  # empty file
             raise ValueError(f"replay file is empty: {self._path}") from exc
         if tag != _TAG_HEADER:
-            raise ValueError(
-                f"replay file does not start with header (tag={tag!r}): {self._path}"
-            )
+            raise ValueError(f"replay file does not start with header (tag={tag!r}): {self._path}")
         header = _dict_to_header(payload)
         if header.version != REPLAY_FORMAT_VERSION:
             raise ReplayVersionError(
-                f"unsupported replay version {header.version}; "
-                f"this build expects {REPLAY_FORMAT_VERSION}"
+                f"unsupported replay version {header.version}; this build expects {REPLAY_FORMAT_VERSION}"
             )
         return header
 

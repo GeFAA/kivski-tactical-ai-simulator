@@ -13,12 +13,11 @@ import time
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
-
 from kivski_sim.config import load_config
 from kivski_sim.map_loader import load_map
 from kivski_sim.replay import ReplayReader
+from rich.console import Console
+from rich.table import Table
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
@@ -73,10 +72,16 @@ def run(
     try:
         from kivski_agents.baselines import get_baseline
 
-        py = get_baseline(policy_yellow, type("E", (), {"action_space": lambda self, _n: None})(), map_data, seed)
-        pb = get_baseline(policy_blue, type("E", (), {"action_space": lambda self, _n: None})(), map_data, seed + 1)
+        py = get_baseline(
+            policy_yellow, type("E", (), {"action_space": lambda self, _n: None})(), map_data, seed
+        )
+        pb = get_baseline(
+            policy_blue, type("E", (), {"action_space": lambda self, _n: None})(), map_data, seed + 1
+        )
     except Exception:
-        console.print("[yellow]Falling back to engine-internal random actions (baselines unavailable).[/yellow]")
+        console.print(
+            "[yellow]Falling back to engine-internal random actions (baselines unavailable).[/yellow]"
+        )
         py = pb = None  # noqa: F841
 
     snap = engine.reset(seed=seed)
@@ -91,7 +96,7 @@ def run(
     done = False
     last_round = -1
     while not done:
-        actions = {a.agent_id: None for a in engine.state.agents if a.alive}  # placeholder, replaced by engine defaults
+        {a.agent_id: None for a in engine.state.agents if a.alive}  # placeholder, replaced by engine defaults
         # For a true watch we'd plug in policy actions here; in V1 fallback we let engine step with no-ops.
         snap, _rewards, done = engine.step({})  # type: ignore[arg-type]
         if snap.round_id != last_round and engine.state.round_summaries:
@@ -121,7 +126,9 @@ def replay(
     """Play back a replay file, printing one line per round end."""
     reader = ReplayReader(path)
     hdr = reader.header
-    console.print(f"[bold]Replaying[/bold] {path.name}  map={hdr.map_name}  seed={hdr.seed}  team_size={hdr.team_size}")
+    console.print(
+        f"[bold]Replaying[/bold] {path.name}  map={hdr.map_name}  seed={hdr.seed}  team_size={hdr.team_size}"
+    )
 
     last_emit = time.time()
     interval = 1.0 / max(speed, 0.01)

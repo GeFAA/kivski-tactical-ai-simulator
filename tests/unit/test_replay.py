@@ -7,7 +7,6 @@ from pathlib import Path
 
 import msgpack
 import pytest
-
 from kivski_sim.replay import (
     REPLAY_FORMAT_VERSION,
     ReplayActionFrame,
@@ -34,7 +33,7 @@ def _make_header() -> ReplayHeader:
 def test_roundtrip_header(tmp_path: Path) -> None:
     path = tmp_path / "match.kreplay"
     header = _make_header()
-    with ReplayWriter(path, header) as w:
+    with ReplayWriter(path, header):
         pass  # only header
     r = ReplayReader(path)
     assert r.header.seed == header.seed
@@ -83,9 +82,7 @@ def test_roundtrip_actions(tmp_path: Path) -> None:
             assert src["buy"] == dst["buy"]
             assert src["aim_target"] == dst["aim_target"]
             # Float list survives the round-trip.
-            assert [round(x, 6) for x in src["comm_payload"]] == [
-                round(x, 6) for x in dst["comm_payload"]
-            ]
+            assert [round(x, 6) for x in src["comm_payload"]] == [round(x, 6) for x in dst["comm_payload"]]
 
 
 def test_roundtrip_events(tmp_path: Path) -> None:
@@ -103,9 +100,7 @@ def test_roundtrip_events(tmp_path: Path) -> None:
 
     r = ReplayReader(path)
     read = list(r.iter_events())
-    assert [(e.tick, e.kind, e.data) for e in read] == [
-        (e.tick, e.kind, e.data) for e in events
-    ]
+    assert [(e.tick, e.kind, e.data) for e in read] == [(e.tick, e.kind, e.data) for e in events]
 
 
 def test_mixed_actions_and_events(tmp_path: Path) -> None:

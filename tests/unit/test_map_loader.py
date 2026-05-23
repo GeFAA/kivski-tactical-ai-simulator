@@ -6,11 +6,9 @@ import math
 
 import numpy as np
 import pytest
-
 from kivski_sim.map_loader import list_maps, load_map
 from kivski_sim.types import Side
 from kivski_sim.visibility import compute_los
-
 
 # ---------------------------------------------------------------------------
 # Smoke-loading
@@ -102,8 +100,8 @@ def test_path_exists_from_yellow_to_a():
     from inside the spawn into A -- the spawn intentionally forces agents to
     round a doorway corner first."""
     md = load_map("dustline")
-    spawn_exit = np.array([8.5, 5.5])     # in the doorway east of yellow spawn
-    a_long_mid = np.array([25.0, 4.0])    # inside A-Long corridor
+    spawn_exit = np.array([8.5, 5.5])  # in the doorway east of yellow spawn
+    a_long_mid = np.array([25.0, 4.0])  # inside A-Long corridor
     site_a_entry = np.array([47.0, 9.5])  # just inside Bombsite A
     for seg_start, seg_end in [(spawn_exit, a_long_mid), (a_long_mid, site_a_entry)]:
         visible, _, _ = compute_los(md, seg_start, seg_end, max_range=80.0)
@@ -118,7 +116,7 @@ def test_path_exists_from_yellow_to_b():
     B-Connector -> B-Site."""
     md = load_map("dustline")
     yellow_south_doorway = np.array([5.5, 7.5])
-    flank_mid = np.array([8.0, 12.0])      # inside YellowFlank, past doorway, clear of cover block
+    flank_mid = np.array([8.0, 12.0])  # inside YellowFlank, past doorway, clear of cover block
     flank_through = np.array([12.0, 13.5])  # inside the gap of the y=13 wall row
     b_connector = np.array([11.0, 24.0])  # B-Connector
     site_b_entry = np.array([13.0, 33.5])  # inside Bombsite B polygon, clear of low cover

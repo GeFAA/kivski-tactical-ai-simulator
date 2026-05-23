@@ -18,7 +18,6 @@ import math
 from typing import Any
 
 import numpy as np
-
 from kivski_sim.config import KivskiConfig
 from kivski_sim.map_loader import MapData
 from kivski_sim.obs_decoder import build_observation_schema, decode_observation
@@ -28,7 +27,6 @@ from kivski_sim.types import (
     MicroAction,
     MoveIntent,
 )
-
 
 __all__ = ["ScriptedHoldBaseline", "ScriptedRushBaseline"]
 
@@ -57,13 +55,13 @@ def _compass_intent_from_dxdy(dx: float, dy: float) -> MoveIntent:
     # Quantize to 8 directions.
     sector = int(round(angle / (math.pi / 4.0))) % 8
     return [
-        MoveIntent.N,   # 0
+        MoveIntent.N,  # 0
         MoveIntent.NE,  # 1
-        MoveIntent.E,   # 2
+        MoveIntent.E,  # 2
         MoveIntent.SE,  # 3
-        MoveIntent.S,   # 4
+        MoveIntent.S,  # 4
         MoveIntent.SW,  # 5 (= -3 mod 8)
-        MoveIntent.W,   # 6 (= -2 mod 8)
+        MoveIntent.W,  # 6 (= -2 mod 8)
         MoveIntent.NW,  # 7 (= -1 mod 8)
     ][sector]
 
@@ -145,11 +143,7 @@ def _nearest_visible_enemy_slot(decoded_obs: dict[str, Any]) -> int | None:
         if age >= best_age:
             continue
         # Reject totally-zero entries (those are padding slots).
-        if (
-            float(slot.get("dx", 0.0)) == 0.0
-            and float(slot.get("dy", 0.0)) == 0.0
-            and age == 0.0
-        ):
+        if float(slot.get("dx", 0.0)) == 0.0 and float(slot.get("dy", 0.0)) == 0.0 and age == 0.0:
             continue
         best_age = age
         best_idx = slot_idx
@@ -257,16 +251,12 @@ class ScriptedHoldBaseline:
 
     def _act_one(self, decoded: dict[str, Any]) -> np.ndarray:
         if not _is_alive(decoded):
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
-            )
+            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.HEAVY_PISTOL)
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0
-            )
+            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0)
 
         # ----- LIVE phase ------------------------------------------------
         site_name, dx, dy, dist = _nearest_bombsite(decoded)
@@ -281,23 +271,15 @@ class ScriptedHoldBaseline:
         if dist < self._hold_threshold:
             # On-site: crouch and hold the angle. If we see an enemy, fire.
             comm = CommAction.PING_LOCATION if enemy_slot is not None else CommAction.NONE
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
-            )
+            return _pack_action(MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
 
         # Approach the chosen bombsite.
         move_intent = _compass_intent_from_dxdy(dx, dy)
-        comm = (
-            CommAction.CONTACT_ENEMY
-            if enemy_slot is not None
-            else CommAction.SUGGEST_ROTATE
-        )
+        comm = CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.SUGGEST_ROTATE
         # Probabilistic comm suppression so the channel isn't perpetually saturated.
         if float(self._rng.random()) > 0.05:
             comm = CommAction.NONE
-        return _pack_action(
-            move_intent, MicroAction.DEFAULT, comm, BuyChoice.NONE, aim_target
-        )
+        return _pack_action(move_intent, MicroAction.DEFAULT, comm, BuyChoice.NONE, aim_target)
 
 
 # ---------------------------------------------------------------------------
@@ -380,16 +362,12 @@ class ScriptedRushBaseline:
 
     def _act_one(self, decoded: dict[str, Any], target_site: str) -> np.ndarray:
         if not _is_alive(decoded):
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
-            )
+            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.SMG)
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0
-            )
+            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0)
 
         # ----- LIVE phase ------------------------------------------------
         dx, dy, dist = _bombsite_distance(decoded, target_site)
@@ -407,12 +385,8 @@ class ScriptedRushBaseline:
 
         # On site but no bomb: hold and shoot.
         if on_site:
-            comm = (
-                CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.NONE
-            )
-            return _pack_action(
-                MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
-            )
+            comm = CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.NONE
+            return _pack_action(MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
 
         # Rush toward the chosen site.
         move_intent = _compass_intent_from_dxdy(dx, dy)
@@ -425,6 +399,4 @@ class ScriptedRushBaseline:
             comm = CommAction.SUGGEST_ATTACK
         if enemy_slot is not None and float(self._rng.random()) < 0.10:
             comm = CommAction.CONTACT_ENEMY
-        return _pack_action(
-            move_intent, micro, comm, BuyChoice.NONE, aim_target
-        )
+        return _pack_action(move_intent, micro, comm, BuyChoice.NONE, aim_target)

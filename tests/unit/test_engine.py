@@ -12,11 +12,10 @@ from typing import Any
 
 import numpy as np
 import pytest
-
 from kivski_sim.config import KivskiConfig
 from kivski_sim.engine import Engine, Snapshot
 from kivski_sim.map_loader import load_map
-from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame, ReplayWriter
+from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame
 from kivski_sim.state import AgentState, MatchState
 from kivski_sim.types import (
     ActionBundle,
@@ -31,7 +30,6 @@ from kivski_sim.types import (
     Team,
     WeaponClass,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -139,7 +137,7 @@ def _run_until(engine: Engine, n_ticks: int, action: ActionBundle | None = None)
     for _ in range(n_ticks):
         if engine.is_done():
             break
-        snap, _, _ = engine.step({i: action for i in range(20)})
+        snap, _, _ = engine.step(dict.fromkeys(range(20), action))
     assert snap is not None
     return snap
 
@@ -154,7 +152,7 @@ def test_same_seed_same_trajectory(small_cfg: KivskiConfig) -> None:
         action = ActionBundle(move=MoveIntent.N, micro=MicroAction.SPRINT)
         snapshots = []
         for _ in range(20):
-            snap, _, done = eng.step({i: action for i in range(20)})
+            snap, _, done = eng.step(dict.fromkeys(range(20), action))
             snapshots.append([tuple(a["pos"]) for a in snap.agents])
             if done:
                 break
@@ -181,7 +179,7 @@ def test_different_seeds_diverge(small_cfg: KivskiConfig) -> None:
     # should (with overwhelming probability) pick different carriers.
     # In a 2-attacker setup the carriers may coincide; we just verify the
     # whole engine state is sensitive to the seed by sampling many seeds.
-    seeds = [s for s in range(20)]
+    seeds = list(range(20))
     snapshots = []
     for s in seeds:
         eng = Engine(config=small_cfg, map_data=md, seed=s)
@@ -338,9 +336,7 @@ def test_economy_loss_bonus_stacks(small_cfg: KivskiConfig) -> None:
     assert deltas[0] >= base, f"first loss bonus too small: {deltas[0]}"
     # The second delta should be larger (base + 1*increment) -- unless capped.
     if deltas[0] < max_loss:
-        assert deltas[1] >= deltas[0] + increment - 1, (
-            f"loss bonus did not stack: {deltas}"
-        )
+        assert deltas[1] >= deltas[0] + increment - 1, f"loss bonus did not stack: {deltas}"
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +344,7 @@ def test_economy_loss_bonus_stacks(small_cfg: KivskiConfig) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _teleport_to_bombsite_A(state: MatchState, agent: AgentState, md: Any) -> None:
+def _teleport_to_bombsite_a(state: MatchState, agent: AgentState, md: Any) -> None:
     """Teleport ``agent`` to the centre of bombsite A so plant/defuse can succeed."""
     site = md.bombsites["A"]
     agent.pos = np.array(site.center, dtype=np.float32)
@@ -364,7 +360,7 @@ def test_bomb_plant_progression(small_cfg: KivskiConfig) -> None:
     # Find the carrier.
     carrier_id = eng.state.bomb.carrier
     carrier = eng.state.agents[carrier_id]
-    _teleport_to_bombsite_A(eng.state, carrier, md)
+    _teleport_to_bombsite_a(eng.state, carrier, md)
     eng.state.bomb.pos = np.array(carrier.pos, dtype=np.float32)
 
     plant_ticks = int(small_cfg.simulation.plant_time_seconds * small_cfg.simulation.tick_rate_hz)
@@ -389,7 +385,7 @@ def test_bomb_defuse_progression(small_cfg: KivskiConfig) -> None:
     # Plant first.
     carrier_id = eng.state.bomb.carrier
     carrier = eng.state.agents[carrier_id]
-    _teleport_to_bombsite_A(eng.state, carrier, md)
+    _teleport_to_bombsite_a(eng.state, carrier, md)
     interact = ActionBundle(micro=MicroAction.INTERACT)
     plant_ticks = int(small_cfg.simulation.plant_time_seconds * small_cfg.simulation.tick_rate_hz)
     for _ in range(plant_ticks + 3):
@@ -419,7 +415,7 @@ def test_bomb_detonate_after_timer(small_cfg: KivskiConfig) -> None:
         eng.step({})
     carrier_id = eng.state.bomb.carrier
     carrier = eng.state.agents[carrier_id]
-    _teleport_to_bombsite_A(eng.state, carrier, md)
+    _teleport_to_bombsite_a(eng.state, carrier, md)
     interact = ActionBundle(micro=MicroAction.INTERACT)
     plant_ticks = int(small_cfg.simulation.plant_time_seconds * small_cfg.simulation.tick_rate_hz)
     for _ in range(plant_ticks + 3):

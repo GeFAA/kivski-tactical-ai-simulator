@@ -15,12 +15,11 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from kivski_sim.config import KivskiConfig, load_config
 
 from kivski_api import __version__

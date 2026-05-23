@@ -13,7 +13,6 @@ from typing import Any
 
 import numpy as np
 
-
 __all__ = ["RandomBaseline"]
 
 

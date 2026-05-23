@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from kivski_sim.utils import (
     angle_diff,
     clamp,
@@ -20,7 +19,6 @@ from kivski_sim.utils import (
     write_json_atomic,
 )
 
-
 # ---------------------------------------------------------------------------
 # Math helpers
 # ---------------------------------------------------------------------------
@@ -30,13 +28,9 @@ def test_angle_diff_handles_wrap() -> None:
     # Exact zero diff
     assert angle_diff(0.0, 0.0) == pytest.approx(0.0)
     # Across +/- pi boundary -- 359deg vs 1deg should be -2deg, not +358deg.
-    assert angle_diff(math.radians(1), math.radians(359)) == pytest.approx(
-        math.radians(2), abs=1e-9
-    )
+    assert angle_diff(math.radians(1), math.radians(359)) == pytest.approx(math.radians(2), abs=1e-9)
     # The reverse must flip sign.
-    assert angle_diff(math.radians(359), math.radians(1)) == pytest.approx(
-        math.radians(-2), abs=1e-9
-    )
+    assert angle_diff(math.radians(359), math.radians(1)) == pytest.approx(math.radians(-2), abs=1e-9)
     # Multi-wrap input: 5pi vs 0 is equivalent to pi vs 0 -> pi (or -pi).
     diff = angle_diff(5.0 * math.pi, 0.0)
     assert abs(abs(diff) - math.pi) < 1e-9

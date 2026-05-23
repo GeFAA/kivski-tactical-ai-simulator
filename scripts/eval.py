@@ -19,13 +19,11 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from kivski_agents.baselines import BASELINE_REGISTRY, get_baseline
+from kivski_agents.eval import ALL_SCENARIOS, EvalResult, EvalRunner
+from kivski_sim.config import KivskiConfig, load_config
 from rich.console import Console
 from rich.table import Table
-
-from kivski_agents.baselines import BASELINE_REGISTRY, get_baseline
-from kivski_agents.eval import ALL_SCENARIOS, EvalRunner, EvalResult
-from kivski_sim.config import KivskiConfig, load_config
-
 
 app = typer.Typer(add_completion=False, help="Run the Kivski head-to-head eval suite.")
 
@@ -52,9 +50,7 @@ def _resolve_policy(name_or_path: str, env: Any, map_data: Any, seed: int) -> An
         try:
             from kivski_agents.baselines.frozen_snapshot import FrozenSnapshotBaseline
         except Exception as exc:  # pragma: no cover - depends on optional torch
-            raise typer.BadParameter(
-                f"Cannot load checkpoint {name_or_path}: {exc}"
-            ) from exc
+            raise typer.BadParameter(f"Cannot load checkpoint {name_or_path}: {exc}") from exc
         return FrozenSnapshotBaseline(ckpt, device=None)
 
     raise typer.BadParameter(
@@ -68,9 +64,7 @@ def _resolve_scenario(name: str) -> Any:
     for spec in ALL_SCENARIOS:
         if spec.name == name:
             return spec
-    raise typer.BadParameter(
-        f"Unknown scenario {name!r}. Available: {[s.name for s in ALL_SCENARIOS]}"
-    )
+    raise typer.BadParameter(f"Unknown scenario {name!r}. Available: {[s.name for s in ALL_SCENARIOS]}")
 
 
 # ---------------------------------------------------------------------------
@@ -121,13 +115,9 @@ def run(
         "-s",
         help="Scenario name from kivski_agents.eval.scenarios.ALL_SCENARIOS.",
     ),
-    matches: int = typer.Option(
-        20, "--matches", "-m", help="Number of matches to play."
-    ),
+    matches: int = typer.Option(20, "--matches", "-m", help="Number of matches to play."),
     seed: int = typer.Option(42, "--seed", help="Deterministic eval seed."),
-    config: str = typer.Option(
-        "configs/default.yaml", "--config", "-c", help="Path to a KivskiConfig YAML."
-    ),
+    config: str = typer.Option("configs/default.yaml", "--config", "-c", help="Path to a KivskiConfig YAML."),
     output: str | None = typer.Option(
         None, "--output", "-o", help="If set, write the result as JSON to this path."
     ),

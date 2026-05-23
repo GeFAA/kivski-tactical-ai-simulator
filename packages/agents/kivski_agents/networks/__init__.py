@@ -30,7 +30,6 @@ from kivski_agents.networks.comm import (
     CommGate,
 )
 
-
 __all__ = [
     "ActorHeads",
     "CommAttention",

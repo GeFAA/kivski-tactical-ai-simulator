@@ -14,7 +14,6 @@ from kivski_agents.training.rollout_collector import RolloutCollector
 from kivski_agents.training.trainer import Trainer, TrainerConfig
 from kivski_agents.training.vec_env import VecEnvWrapper
 
-
 __all__ = [
     "VecEnvWrapper",
     "RolloutCollector",

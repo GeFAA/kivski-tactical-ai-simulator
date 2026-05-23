@@ -13,7 +13,6 @@ import math
 
 import pytest
 import torch
-
 from kivski_agents.networks.actor_critic import (
     ActorHeads,
     KivskiActorCritic,
@@ -22,7 +21,6 @@ from kivski_agents.networks.actor_critic import (
     ValueHead,
 )
 from kivski_agents.networks.comm import CommAttention, CommEncoder, CommGate
-
 
 # ---------------------------------------------------------------------------
 # Shared test sizes
@@ -140,10 +138,7 @@ def test_actor_heads_evaluate_log_prob_finite() -> None:
     head = ActorHeads(hidden_size=HIDDEN, action_dims=ACTION_DIMS, embedding_dim=8)
     hidden = _seeded_tensor(BATCH, HIDDEN, seed=7)
     actions = torch.stack(
-        [
-            torch.randint(low=0, high=n_cat, size=(BATCH,), dtype=torch.int64)
-            for n_cat in ACTION_DIMS
-        ],
+        [torch.randint(low=0, high=n_cat, size=(BATCH,), dtype=torch.int64) for n_cat in ACTION_DIMS],
         dim=1,
     )
     log_probs, entropy = head.evaluate(hidden, actions)
@@ -214,9 +209,7 @@ def test_comm_gate_train_vs_eval() -> None:
 def test_comm_attention_respects_mask() -> None:
     """All-zero mask => exactly-zero aggregation (no spurious NaN)."""
     torch.manual_seed(0)
-    attn = CommAttention(
-        signature_dim=COMM_SIG, value_dim=COMM_VAL, num_heads=COMM_HEADS
-    )
+    attn = CommAttention(signature_dim=COMM_SIG, value_dim=COMM_VAL, num_heads=COMM_HEADS)
     q = torch.randn(BATCH, COMM_SIG)
     sigs = torch.randn(BATCH, N_AGENTS - 1, COMM_SIG)
     vals = torch.randn(BATCH, N_AGENTS - 1, COMM_VAL)
@@ -235,9 +228,7 @@ def test_comm_attention_respects_mask() -> None:
 def test_comm_attention_partial_mask_normalisation() -> None:
     """Weights for the live teammates must sum to 1 along the last axis."""
     torch.manual_seed(0)
-    attn = CommAttention(
-        signature_dim=COMM_SIG, value_dim=COMM_VAL, num_heads=COMM_HEADS
-    )
+    attn = CommAttention(signature_dim=COMM_SIG, value_dim=COMM_VAL, num_heads=COMM_HEADS)
     q = torch.randn(BATCH, COMM_SIG)
     sigs = torch.randn(BATCH, N_AGENTS - 1, COMM_SIG)
     vals = torch.randn(BATCH, N_AGENTS - 1, COMM_VAL)

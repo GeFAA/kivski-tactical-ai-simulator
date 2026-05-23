@@ -45,10 +45,28 @@ class _JsonFormatter(logging.Formatter):
             if k in payload or k.startswith("_"):
                 continue
             if k in (
-                "args", "asctime", "created", "exc_info", "exc_text", "filename",
-                "funcName", "levelname", "levelno", "lineno", "message", "module",
-                "msecs", "msg", "name", "pathname", "process", "processName",
-                "relativeCreated", "stack_info", "thread", "threadName",
+                "args",
+                "asctime",
+                "created",
+                "exc_info",
+                "exc_text",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "message",
+                "module",
+                "msecs",
+                "msg",
+                "name",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "stack_info",
+                "thread",
+                "threadName",
                 "taskName",
             ):
                 continue
@@ -94,15 +112,11 @@ def setup_logging(level: str = "INFO", json: bool = False) -> None:
                 show_path=False,
                 markup=False,
             )
-            handler.setFormatter(
-                logging.Formatter(fmt="%(module)s:%(lineno)d | %(message)s")
-            )
+            handler.setFormatter(logging.Formatter(fmt="%(module)s:%(lineno)d | %(message)s"))
         except ImportError:  # pragma: no cover - rich is a hard dep, but be safe
             handler = logging.StreamHandler(stream=sys.stderr)
             handler.setFormatter(
-                logging.Formatter(
-                    fmt="%(asctime)s [%(levelname)s] %(module)s:%(lineno)d | %(message)s"
-                )
+                logging.Formatter(fmt="%(asctime)s [%(levelname)s] %(module)s:%(lineno)d | %(message)s")
             )
 
     handler.setLevel(_resolve_level(level))

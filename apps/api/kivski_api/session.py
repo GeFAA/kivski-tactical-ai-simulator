@@ -21,6 +21,7 @@ Disconnected sockets are pruned silently.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import subprocess
 import uuid
@@ -116,7 +117,7 @@ class MatchSession:
     cfg: KivskiConfig
     paused: bool = False
     speed: float = 1.0
-    subscribers: set["WebSocket"] = field(default_factory=set)
+    subscribers: set[WebSocket] = field(default_factory=set)
     policy_yellow: PolicyAdapter = field(default_factory=load_policy)
     policy_blue: PolicyAdapter = field(default_factory=load_policy)
     policy_yellow_name: str | None = None
@@ -147,7 +148,7 @@ class MatchSession:
             return
         try:
             await asyncio.wait_for(self._task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             self._task.cancel()
         self._task = None
 
@@ -241,9 +242,7 @@ class MatchSession:
                 await self._broadcast_snapshot()
 
                 if done:
-                    await self._broadcast_event(
-                        {"type": "match_done", "match_id": self.id}
-                    )
+                    await self._broadcast_event({"type": "match_done", "match_id": self.id})
                     _LOG.info("Match %s finished, loop exiting", self.id)
                     break
 
@@ -386,10 +385,8 @@ class SessionRegistry:
         await session.stop()
         # Close any remaining sockets (best-effort).
         for ws in list(session.subscribers):
-            try:
+            with contextlib.suppress(Exception):
                 await ws.close()
-            except Exception:
-                pass
         session.subscribers.clear()
         _LOG.info("Removed match %s", match_id)
 
@@ -399,10 +396,8 @@ class SessionRegistry:
             await self.remove_match(match_id)
         for job in list(self.training.values()):
             if job.process is not None and job.is_running():
-                try:
+                with contextlib.suppress(Exception):
                     job.process.terminate()
-                except Exception:
-                    pass
 
     # ----- Training ----------------------------------------------------
 

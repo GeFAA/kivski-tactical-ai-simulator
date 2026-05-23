@@ -15,7 +15,6 @@ from collections.abc import Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-
 from kivski_api.app import create_app
 from kivski_api.session import REGISTRY
 
