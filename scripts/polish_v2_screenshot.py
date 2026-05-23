@@ -4,6 +4,7 @@ Loads the dev frontend, waits for the live match to populate, and
 captures both a full-page and a canvas-only crop into
 ``models/logs/e2e/polish-v2/``.
 """
+
 import asyncio
 import sys
 from pathlib import Path
