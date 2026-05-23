@@ -33,6 +33,7 @@ import type {
   MatchPhase,
   MatchSnapshot,
   Side,
+  Team,
   Vec2,
   WeaponKind,
   WeaponState,
@@ -82,6 +83,15 @@ export const BOMB_PHASE_INT_TO_STRING: Record<number, BombPhase> = {
 export const SIDE_INT_TO_STRING: Record<number, Side> = {
   0: "attacker",
   1: "defender",
+};
+
+/**
+ * `Team` enum in the backend:
+ *     YELLOW=0, BLUE=1
+ */
+export const TEAM_INT_TO_STRING: Record<number, Team> = {
+  0: "yellow",
+  1: "blue",
 };
 
 /**
@@ -244,6 +254,8 @@ export function decodeAgentSnapshot(
   const id = agentIdToString(raw.id);
   const sideInt = toInt(raw.side, 0);
   const side: Side = SIDE_INT_TO_STRING[sideInt] ?? "attacker";
+  const teamInt = toInt(raw.team, 0);
+  const team: Team = TEAM_INT_TO_STRING[teamInt] ?? "yellow";
   const weaponInt = toInt(raw.weapon, 0);
   const hasBomb = toBool(raw.has_bomb, false);
   const isAlive = toBool(raw.alive, true);
@@ -262,6 +274,7 @@ export function decodeAgentSnapshot(
   return {
     id,
     name: `Agent ${id}`,
+    team,
     side,
     pos: toVec2(raw.pos),
     facing: toNumber(raw.facing, 0),

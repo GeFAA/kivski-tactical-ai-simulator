@@ -1,5 +1,10 @@
-import type { AgentSnapshot, Side } from "@/lib/types";
-import { selectAttackers, selectDefenders, useStore } from "@/lib/store";
+import type { AgentSnapshot, Side, Team } from "@/lib/types";
+import {
+  selectBlueTeam,
+  selectYellowTeam,
+  teamCurrentSide,
+  useStore,
+} from "@/lib/store";
 import EconomyMiniBar from "@/components/EconomyMiniBar";
 
 const weaponShort = (a: AgentSnapshot): string => {
@@ -96,29 +101,69 @@ const PlayerRow = ({ a }: { a: AgentSnapshot }) => {
   );
 };
 
+/**
+ * Sidebar grouping is by **team** (yellow / blue) — that identity is
+ * stable across the side-switch round, so the panels don't reshuffle
+ * visually mid-match. The subheader shows the current side role
+ * ("playing as attackers" / "playing as defenders") which DOES flip at
+ * the switch, plus the alive count. The bullet/accent colour follows the
+ * current side so the colour-coding inside the map viewer (yellow dots
+ * for attackers, blue dots for defenders) stays in sync.
+ */
+const TEAM_LABEL: Record<Team, string> = {
+  yellow: "Yellow Team",
+  blue: "Blue Team",
+};
+
+const TEAM_COLOR_CLASS: Record<Team, string> = {
+  // Yellow team is rendered in the attacker accent at the start of the
+  // match; we keep the brand colour stable so the header is recognisable.
+  yellow: "text-kivski-attacker",
+  blue: "text-kivski-defender",
+};
+
+const TEAM_DOT_CLASS: Record<Team, string> = {
+  yellow: "bg-kivski-attacker",
+  blue: "bg-kivski-defender",
+};
+
+const sideRoleLabel = (side: Side | null): string => {
+  if (side === "attacker") return "playing as attackers";
+  if (side === "defender") return "playing as defenders";
+  return "side pending";
+};
+
 const TeamBlock = ({
-  side,
-  label,
+  team,
   players,
 }: {
-  side: Side;
-  label: string;
+  team: Team;
   players: AgentSnapshot[];
 }) => {
   const aliveCount = players.filter((p) => p.isAlive).length;
-  const accent = side === "attacker" ? "text-kivski-attacker" : "text-kivski-defender";
+  const currentSide = teamCurrentSide(players);
+  // The economy mini-bar is keyed by side (attacker / defender), so we
+  // hand it the team's current role. The bar will swap whenever the
+  // side flips, but the panel header stays put.
+  const econSide: Side = currentSide ?? "attacker";
+
   return (
     <section className="panel flex min-h-0 flex-1 flex-col">
-      <header className="panel-header">
-        <div className="flex items-center gap-2">
-          <span className={`h-2.5 w-2.5 rounded-full ${side === "attacker" ? "bg-kivski-attacker" : "bg-kivski-defender"}`} />
-          <span className={accent}>{label}</span>
+      <header className="panel-header flex-col items-start gap-0.5">
+        <div className="flex w-full items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 rounded-full ${TEAM_DOT_CLASS[team]}`} />
+            <span className={TEAM_COLOR_CLASS[team]}>{TEAM_LABEL[team]}</span>
+          </div>
+          <span className="stat normal-case text-kivski-muted">
+            {aliveCount}/{players.length} alive
+          </span>
         </div>
-        <span className="stat normal-case text-kivski-muted">
-          {aliveCount}/{players.length} alive
+        <span className="text-[10px] uppercase tracking-wider text-kivski-muted">
+          {sideRoleLabel(currentSide)}
         </span>
       </header>
-      <EconomyMiniBar side={side} />
+      <EconomyMiniBar side={econSide} />
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
         {players.length === 0 ? (
           <div className="px-1 py-6 text-center text-xs text-kivski-muted">No agents yet.</div>
@@ -131,13 +176,13 @@ const TeamBlock = ({
 };
 
 const LeftSidebar = () => {
-  const attackers = useStore(selectAttackers);
-  const defenders = useStore(selectDefenders);
+  const yellow = useStore(selectYellowTeam);
+  const blue = useStore(selectBlueTeam);
 
   return (
     <aside className="flex min-h-0 flex-col gap-2">
-      <TeamBlock side="attacker" label="Attackers" players={attackers} />
-      <TeamBlock side="defender" label="Defenders" players={defenders} />
+      <TeamBlock team="yellow" players={yellow} />
+      <TeamBlock team="blue" players={blue} />
     </aside>
   );
 };

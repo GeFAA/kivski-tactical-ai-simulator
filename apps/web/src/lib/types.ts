@@ -10,6 +10,18 @@
 
 export type Side = "attacker" | "defender";
 
+/**
+ * Persistent team identity. The team a player belongs to never changes
+ * during a match; what changes is their `Side` (attacker / defender) at
+ * the side-switch round. The viewer groups the sidebar by `Team` so the
+ * UI is stable across the switch and only labels (and the bullet colour)
+ * change to reflect the new role.
+ *
+ * Mirrors `Team` in :file:`packages/sim/kivski_sim/types.py`
+ * (YELLOW = 0, BLUE = 1).
+ */
+export type Team = "yellow" | "blue";
+
 export type MatchPhase =
   | "warmup"
   | "buy"
@@ -82,6 +94,16 @@ export interface AgentSnapshot {
   id: string;
   /** Display name of the agent or AI policy persona. */
   name: string;
+  /**
+   * Persistent team identity (yellow / blue). Does NOT change at the
+   * side-switch round — use this to group the sidebar by team so the
+   * UI is stable across switches.
+   */
+  team: Team;
+  /**
+   * Current side role (attacker / defender). Flips at the side-switch
+   * round. Use this for role-specific labels and the dot/accent colour.
+   */
   side: Side;
   pos: Vec2;
   /** Yaw in radians (0 = +x axis, CCW positive). */

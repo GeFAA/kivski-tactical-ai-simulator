@@ -8,6 +8,15 @@ import CommsOverlay from "@/components/CommsOverlay";
 import InfluenceArrows from "@/components/InfluenceArrows";
 import HeatmapOverlay from "@/components/HeatmapOverlay";
 
+/**
+ * Wall-clock interval (ms) over which we interpolate between two
+ * snapshots. The backend broadcasts at ``server.tick_broadcast_hz``
+ * (20 Hz default → 50 ms) and the engine ticks at 10 Hz (100 ms), so
+ * 100 ms is a safe ceiling. We clamp ``alpha`` to ``[0, 1]`` so the dot
+ * sits at the latest snapshot if a frame is late.
+ */
+const SNAPSHOT_INTERVAL_MS = 100;
+
 // ---------- Color helpers ----------
 
 const COLORS = {
@@ -127,42 +136,212 @@ const drawMap = (
   }
 };
 
-const drawPlayers = (
+// ----- Interpolated player rendering ------------------------------------
+//
+// We keep a stable per-agent dot in the players container and update its
+// position every frame via Pixi's ticker. The dot's *visual* state (alive
+// cross, selection ring, facing arrow) is rebuilt only when the snapshot
+// changes — but its (x, y) is lerped between the previous and current
+// snapshot so the user sees a smooth glide instead of a 0.45-tile jump
+// every 100 ms. On a round reset (round id change) we skip interpolation
+// and snap to the new spawn so players don't appear to slide across the
+// map.
+interface DotEntry {
+  /** The Pixi node — kept across snapshots so position can be tweened. */
+  graphic: Graphics;
+  /** Hash of the last visual state we rendered into this Graphics. */
+  visualKey: string;
+  /** Last selection state we wired the click handler against. */
+  selectedSnapshot: boolean;
+}
+
+interface AgentPosKeyframe {
+  x: number;
+  y: number;
+  alive: boolean;
+}
+
+interface PlayerRenderState {
+  /** Per-agent stable Pixi nodes. */
+  dots: Map<string, DotEntry>;
+  /**
+   * Previous-snapshot positions, keyed by agent id. Filled at the moment
+   * a fresh snapshot arrives. Missing entries fall through to "current".
+   */
+  prev: Map<string, AgentPosKeyframe>;
+  /** Current-snapshot positions, keyed by agent id. */
+  curr: Map<string, AgentPosKeyframe>;
+  /** Wall-clock ms at which the current snapshot arrived. */
+  receivedAt: number;
+  /**
+   * Round id of the latest snapshot. When the round flips we skip
+   * interpolation for that one update so respawned agents pop into
+   * place rather than slide across the entire map.
+   */
+  round: number;
+}
+
+const _visualKey = (
+  a: AgentSnapshot,
+  isSelected: boolean,
+): string =>
+  `${a.side}|${a.isAlive ? 1 : 0}|${isSelected ? 1 : 0}|${a.facing.toFixed(2)}`;
+
+const _redrawDot = (
+  dot: Graphics,
+  a: AgentSnapshot,
+  isSelected: boolean,
+): void => {
+  dot.clear();
+  const r = 1.1;
+  const color = sideColor(a.side);
+  if (isSelected) {
+    dot.circle(0, 0, r + 0.5).stroke({ color: COLORS.selectionRing, width: 0.25 });
+  }
+  if (a.isAlive) {
+    dot.circle(0, 0, r).fill({ color, alpha: 0.95 });
+    dot.circle(0, 0, r).stroke({ color: 0x000000, width: 0.15, alpha: 0.6 });
+    const fx = Math.cos(a.facing) * (r + 0.9);
+    const fy = Math.sin(a.facing) * (r + 0.9);
+    dot.moveTo(0, 0).lineTo(fx, fy).stroke({ color, width: 0.3, alpha: 0.9 });
+  } else {
+    dot
+      .moveTo(-r, -r)
+      .lineTo(r, r)
+      .moveTo(-r, r)
+      .lineTo(r, -r)
+      .stroke({ color, width: 0.3, alpha: 0.7 });
+  }
+};
+
+/**
+ * Merge a fresh snapshot into the persistent render state. Ensures one
+ * dot per agent (creating / removing as needed), refreshes the dot's
+ * visual state, and records the previous-vs-current keyframes used by
+ * the per-frame interpolator.
+ */
+const ingestPlayersSnapshot = (
   layer: Container,
+  state: PlayerRenderState,
   agents: AgentSnapshot[],
   selectedId: string | null,
+  round: number,
   onSelect: (id: string | null) => void,
-) => {
-  layer.removeChildren();
+): void => {
+  const seen = new Set<string>();
+  // The new "previous" map is the old "current" — i.e. where the dots
+  // are *right now* (or rather, where they were headed). If a round
+  // change is detected we'll snap by overwriting prev with curr later.
+  const newPrev = new Map<string, AgentPosKeyframe>();
+  for (const [id, kf] of state.curr) {
+    newPrev.set(id, kf);
+  }
+  // Also fold in any in-flight interpolated positions from the *old*
+  // prev → curr so the new tween starts from the dot's current visible
+  // position, not from the previous snapshot's keyframe. This avoids a
+  // tiny visual rubber-band when snapshots arrive out of sync with the
+  // 100 ms tween window.
+  const tweenAlpha = state.curr.size === 0 ? 1 : Math.min(
+    1,
+    Math.max(0, (performance.now() - state.receivedAt) / SNAPSHOT_INTERVAL_MS),
+  );
+  if (tweenAlpha < 1) {
+    for (const [id, prev] of state.prev) {
+      const curr = state.curr.get(id);
+      if (!curr) continue;
+      newPrev.set(id, {
+        x: prev.x + (curr.x - prev.x) * tweenAlpha,
+        y: prev.y + (curr.y - prev.y) * tweenAlpha,
+        alive: curr.alive,
+      });
+    }
+  }
+
+  const newCurr = new Map<string, AgentPosKeyframe>();
   for (const a of agents) {
-    const dot = new Graphics();
-    const r = 1.1;
-    const color = sideColor(a.side);
+    seen.add(a.id);
+    newCurr.set(a.id, { x: a.pos.x, y: a.pos.y, alive: a.isAlive });
 
-    if (selectedId === a.id) {
-      dot.circle(0, 0, r + 0.5).stroke({ color: COLORS.selectionRing, width: 0.25 });
+    const isSelected = selectedId === a.id;
+    let entry = state.dots.get(a.id);
+    if (!entry) {
+      const g = new Graphics();
+      g.eventMode = "static";
+      g.cursor = "pointer";
+      layer.addChild(g);
+      entry = { graphic: g, visualKey: "", selectedSnapshot: false };
+      state.dots.set(a.id, entry);
+      // Brand-new dot — start interpolation at the same position as the
+      // current snapshot to avoid a slide-in from (0, 0).
+      newPrev.set(a.id, { x: a.pos.x, y: a.pos.y, alive: a.isAlive });
     }
 
-    if (a.isAlive) {
-      dot.circle(0, 0, r).fill({ color, alpha: 0.95 });
-      dot.circle(0, 0, r).stroke({ color: 0x000000, width: 0.15, alpha: 0.6 });
-      const fx = Math.cos(a.facing) * (r + 0.9);
-      const fy = Math.sin(a.facing) * (r + 0.9);
-      dot.moveTo(0, 0).lineTo(fx, fy).stroke({ color, width: 0.3, alpha: 0.9 });
+    // Re-bind the click handler if the selection target flipped (cheap).
+    if (entry.selectedSnapshot !== isSelected) {
+      entry.graphic.removeAllListeners();
+      entry.graphic.on("pointertap", () =>
+        onSelect(isSelected ? null : a.id),
+      );
+      entry.selectedSnapshot = isSelected;
     } else {
-      dot
-        .moveTo(-r, -r)
-        .lineTo(r, r)
-        .moveTo(-r, r)
-        .lineTo(r, -r)
-        .stroke({ color, width: 0.3, alpha: 0.7 });
+      // The closure captures the agent id only — make sure it stays
+      // current across snapshots even when selection didn't change.
+      entry.graphic.removeAllListeners();
+      entry.graphic.on("pointertap", () =>
+        onSelect(isSelected ? null : a.id),
+      );
     }
 
-    dot.position.set(a.pos.x, a.pos.y);
-    dot.eventMode = "static";
-    dot.cursor = "pointer";
-    dot.on("pointertap", () => onSelect(selectedId === a.id ? null : a.id));
-    layer.addChild(dot);
+    const vk = _visualKey(a, isSelected);
+    if (vk !== entry.visualKey) {
+      _redrawDot(entry.graphic, a, isSelected);
+      entry.visualKey = vk;
+    }
+  }
+
+  // Remove dots for agents that disappeared (shouldn't happen mid-match
+  // but is correct on match reset).
+  for (const [id, entry] of state.dots) {
+    if (!seen.has(id)) {
+      if (!entry.graphic.destroyed) entry.graphic.destroy();
+      state.dots.delete(id);
+    }
+  }
+
+  // Round transition: snap. The respawn would otherwise look like every
+  // agent telegraphing 40+ tiles across the map in 100 ms.
+  const roundChanged = round !== state.round;
+  if (roundChanged) {
+    for (const [id, kf] of newCurr) {
+      newPrev.set(id, { ...kf });
+    }
+  }
+
+  state.prev = newPrev;
+  state.curr = newCurr;
+  state.receivedAt = performance.now();
+  state.round = round;
+};
+
+/**
+ * Per-frame position update. Called from Pixi's ticker. Lerps each
+ * dot's (x, y) between its previous and current keyframe based on how
+ * far along the 100 ms tween we are.
+ */
+const tickPlayerPositions = (state: PlayerRenderState): void => {
+  if (state.dots.size === 0) return;
+  const alpha = Math.min(
+    1,
+    Math.max(0, (performance.now() - state.receivedAt) / SNAPSHOT_INTERVAL_MS),
+  );
+  for (const [id, entry] of state.dots) {
+    if (entry.graphic.destroyed) continue;
+    const curr = state.curr.get(id);
+    if (!curr) continue;
+    const prev = state.prev.get(id) ?? curr;
+    const x = prev.x + (curr.x - prev.x) * alpha;
+    const y = prev.y + (curr.y - prev.y) * alpha;
+    entry.graphic.position.set(x, y);
   }
 };
 
@@ -356,14 +535,35 @@ const MapViewer = () => {
       ro.observe(host);
       (app as Application & { __ro?: ResizeObserver }).__ro = ro;
 
-      // Wire static-layer redraws on every store change. Players + bomb only.
-      // Guard against firing on torn-down containers in case the unsub
-      // ordering ever races with `destroy()`.
+      // Persistent render state for the players layer — see the docstring
+      // on PlayerRenderState. Lives in this closure so cleanup can stop
+      // the ticker and tear down the dots together with the Pixi app.
+      const playerState: PlayerRenderState = {
+        dots: new Map(),
+        prev: new Map(),
+        curr: new Map(),
+        receivedAt: performance.now(),
+        round: -1,
+      };
+
+      // Wire static-layer redraws on every store change. Players are
+      // ingested into the persistent render state (positions are kept
+      // animated by the ticker below); the bomb is small enough to
+      // rebuild from scratch each snapshot. Guard against firing on
+      // torn-down containers in case the unsub ordering ever races
+      // with `destroy()`.
       const unsub = useStore.subscribe((state) => {
         if (disposed) return;
         if (players.destroyed || bomb.destroyed) return;
         try {
-          drawPlayers(players, state.agents, state.selectedAgentId, selectAgent);
+          ingestPlayersSnapshot(
+            players,
+            playerState,
+            state.agents,
+            state.selectedAgentId,
+            state.round,
+            selectAgent,
+          );
           drawBomb(bomb, state.bomb);
         } catch (err) {
 
@@ -371,6 +571,20 @@ const MapViewer = () => {
         }
       });
       (app as Application & { __unsub?: () => void }).__unsub = unsub;
+
+      // Per-frame interpolation hook — runs at the Pixi ticker's native
+      // rate (capped at the browser's vsync). Cheap: at most O(N) where
+      // N == active agents.
+      const tickerFn = () => {
+        if (disposed || players.destroyed) return;
+        try {
+          tickPlayerPositions(playerState);
+        } catch (err) {
+          console.error("[kivski] player ticker failed:", err);
+        }
+      };
+      app.ticker.add(tickerFn);
+      (app as Application & { __tickerFn?: () => void }).__tickerFn = tickerFn;
 
       // Mark context ready so overlays can mount.
       setPixiReady(true);
@@ -392,6 +606,10 @@ const MapViewer = () => {
         const u = (a as Application & { __unsub?: () => void }).__unsub;
         if (u) {
           try { u(); } catch { /* ignore */ }
+        }
+        const tf = (a as Application & { __tickerFn?: () => void }).__tickerFn;
+        if (tf && a.ticker) {
+          try { a.ticker.remove(tf); } catch { /* ignore */ }
         }
         try {
           a.destroy(true, { children: true, texture: true });
