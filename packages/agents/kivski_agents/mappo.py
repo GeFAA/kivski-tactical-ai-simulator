@@ -21,8 +21,6 @@ both decentralised actors and centralised critics (CTDE).
 from __future__ import annotations
 
 import contextlib
-import json
-import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -34,6 +32,12 @@ from kivski_sim.config import MLConfig
 
 from kivski_agents.buffer import RolloutBuffer
 from kivski_agents.networks.actor_critic import KivskiActorCritic
+from kivski_agents.persistence.checkpoint_compat import (
+    CheckpointIncompatibleError,
+    build_compat_metadata,
+    check_compat,
+    write_sidecar_metadata,
+)
 
 __all__ = ["MAPPOLoss", "MAPPOTrainer"]
 
@@ -235,52 +239,138 @@ class MAPPOTrainer:
     # Checkpointing
     # --------------------------------------------------------------
 
-    def save(self, path: str | Path, metadata: dict[str, Any] | None = None) -> Path:
+    def save(
+        self,
+        path: str | Path,
+        metadata: dict[str, Any] | None = None,
+        env_shape: dict[str, Any] | None = None,
+    ) -> Path:
         """Save model + optimizer state to ``path`` and a sidecar JSON.
 
-        The sidecar file lives next to the checkpoint at ``path.with_suffix('.json')``
-        and is written in a stable, human-readable format that ops people
-        can grep.
+        The blob written to ``path`` always includes a compat metadata
+        section (model arch + env shape) so :meth:`load` -- or any other
+        consumer like :class:`PolicyBundle.from_checkpoint` -- can refuse
+        to load it into a differently-shaped model instead of crashing
+        the trainer with a ``size mismatch`` ``RuntimeError`` (which the
+        watchdog used to interpret as a transient failure and respawn
+        forever).
+
+        The sidecar file lives next to the checkpoint at
+        ``path.with_suffix('.json')`` and is written in a stable,
+        human-readable format that ops people can grep.
+
+        Args:
+            path: Destination checkpoint path. Parent dir is created.
+            metadata: Caller-supplied extras (episode, run_name, score,
+                ...). Merged into the saved blob's ``metadata`` field.
+            env_shape: Optional ``{obs_dim, n_heads, team_size}`` blob
+                from the live vec_env. When ``None`` only ``team_size``
+                (inferred from ``action_dims[4]``) is recorded.
         """
         out_path = Path(path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        metadata = dict(metadata or {})
-        metadata.setdefault("kivski_version", "0.1.0")
-        metadata.setdefault("timestamp", time.time())
-        metadata.setdefault("update_steps", int(self._update_steps))
+        # Build the strict compat block first so callers can't silently
+        # overwrite ``model_arch`` / ``env_shape`` from their own metadata.
+        compat = build_compat_metadata(
+            model_arch=_model_init_dict(self.model),
+            env_shape=env_shape or _env_shape_from_model(self.model),
+            extra=None,
+        )
+        # User-supplied metadata is layered *under* the compat block, so
+        # arbitrary keys (episode, run_name, opponent, score, ...) are
+        # preserved without ever overriding ``model_arch`` / ``env_shape``.
+        meta_out: dict[str, Any] = dict(metadata or {})
+        meta_out.setdefault("kivski_version", compat["kivski_version"])
+        meta_out.setdefault("timestamp", compat["timestamp"])
+        meta_out.setdefault("update_steps", int(self._update_steps))
+        # Strict block overrides any stale arch/env the caller may have set.
+        meta_out["schema_version"] = compat["schema_version"]
+        meta_out["model_arch"] = compat["model_arch"]
+        meta_out["env_shape"] = compat["env_shape"]
 
         torch.save(
             {
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
-                "metadata": metadata,
+                "metadata": meta_out,
                 "model_init": _model_init_dict(self.model),
                 "cfg": _ml_config_to_dict(self.cfg),
             },
             out_path,
         )
-        sidecar = (
-            out_path.with_suffix(out_path.suffix + ".json")
-            if out_path.suffix
-            else out_path.with_suffix(".json")
-        )
-        with sidecar.open("w", encoding="utf-8") as fh:
-            json.dump(metadata, fh, indent=2, sort_keys=True, default=_json_safe)
+        # Sidecar JSON (torch-free read path).
+        sidecar_payload: dict[str, Any] = dict(meta_out)
+        # tensors / numpy scalars shouldn't appear here but be defensive.
+        for k, v in list(sidecar_payload.items()):
+            if torch.is_tensor(v):
+                sidecar_payload[k] = v.tolist()
+        write_sidecar_metadata(out_path, sidecar_payload)
         return out_path
 
-    def load(self, path: str | Path) -> dict[str, Any]:
-        """Restore model + optimizer state. Returns the metadata dict."""
+    def load(
+        self,
+        path: str | Path,
+        env_shape: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Restore model + optimizer state. Returns the metadata dict.
+
+        Validates the saved compat metadata against the currently-built
+        model and ``env_shape``. On any mismatch raises
+        :class:`CheckpointIncompatibleError` -- the API watchdog catches
+        this specifically and refuses to auto-restart with the same
+        ``--resume`` target, preventing the infinite-respawn cascade we
+        hit when a stale ``best.pt`` had a wrong ``hidden_size``.
+
+        For backwards-compatibility: checkpoints without metadata are
+        loaded best-effort, but any ``RuntimeError`` from
+        ``load_state_dict`` (typically a "size mismatch") is converted
+        into :class:`CheckpointIncompatibleError` so the watchdog short-
+        circuit still fires.
+        """
         ckpt_path = Path(path)
         ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model"])
+        if not isinstance(ckpt, dict):
+            # Lone state_dict. Try the load directly; failure -> incompat.
+            try:
+                self.model.load_state_dict(ckpt)
+            except RuntimeError as exc:
+                raise CheckpointIncompatibleError(
+                    f"Checkpoint {ckpt_path.name} (bare state_dict) cannot be "
+                    f"loaded into the current model: {exc}"
+                ) from exc
+            return {}
+
+        saved_meta = dict(ckpt.get("metadata", {}) or {})
+        expected = {
+            "model_arch": _model_init_dict(self.model),
+            "env_shape": env_shape or _env_shape_from_model(self.model),
+        }
+        if saved_meta and "model_arch" in saved_meta:
+            # Hard fail with a clear message before torch even tries the
+            # state-dict copy.
+            check_compat(saved_meta, expected, source=ckpt_path.name)
+        else:
+            # No metadata -> warn but proceed. The actual load below will
+            # surface the size mismatch if there is one.
+            pass
+
+        try:
+            self.model.load_state_dict(ckpt["model"])
+        except RuntimeError as exc:
+            # Translate the cryptic "size mismatch for X.weight ..." error
+            # into something the watchdog can recognise.
+            raise CheckpointIncompatibleError(
+                f"Checkpoint {ckpt_path.name} does not match current model "
+                f"arch (state_dict load failed): {exc}"
+            ) from exc
+
         if "optimizer" in ckpt:
             # Optimizer state may be mismatched if model layout changed.
             # We surface this through metadata but don't crash.
             with contextlib.suppress(ValueError, KeyError):
                 self.optimizer.load_state_dict(ckpt["optimizer"])
-        meta = dict(ckpt.get("metadata", {}))
-        self._update_steps = int(meta.get("update_steps", self._update_steps))
-        return meta
+        self._update_steps = int(saved_meta.get("update_steps", self._update_steps))
+        return saved_meta
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +406,28 @@ def _model_init_dict(model: KivskiActorCritic) -> dict[str, Any]:
     }
 
 
+def _env_shape_from_model(model: KivskiActorCritic) -> dict[str, Any]:
+    """Best-effort env shape inferred from a model when no live env is around.
+
+    ``team_size`` is reconstructed from ``action_dims[4] = 2 * team_size + 1``
+    (see :func:`kivski_agents.factory.default_action_dims`). ``n_heads`` is
+    the number of discrete action heads (== ``len(action_dims)``).
+    ``obs_dim`` is read straight from the model.
+    """
+    action_dims = list(model.action_dims) if model.action_dims else []
+    n_heads = len(action_dims)
+    team_size: int | None = None
+    if n_heads >= 5:
+        last = int(action_dims[4])
+        if last >= 3 and (last - 1) % 2 == 0:
+            team_size = (last - 1) // 2
+    return {
+        "obs_dim": int(model.obs_dim),
+        "n_heads": int(n_heads),
+        "team_size": int(team_size) if team_size is not None else None,
+    }
+
+
 def _ml_config_to_dict(cfg: MLConfig) -> dict[str, Any]:
     """Dump :class:`MLConfig` to a JSON-friendly dict (best-effort)."""
     try:
@@ -325,7 +437,13 @@ def _ml_config_to_dict(cfg: MLConfig) -> dict[str, Any]:
 
 
 def _json_safe(value: Any) -> Any:
-    """JSON encoder hook for things like tensors and numpy scalars."""
+    """JSON encoder hook for things like tensors and numpy scalars.
+
+    Kept for backwards-compat: callers used to pass this to
+    ``json.dump(..., default=_json_safe)``. The current save path
+    delegates sidecar writing to ``write_sidecar_metadata`` which uses
+    ``default=str``, so this helper is now an opt-in convenience.
+    """
     if torch.is_tensor(value):
         return value.tolist()
     return str(value)

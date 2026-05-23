@@ -60,10 +60,14 @@ __all__ = [
 # basically free; short enough that a crashed trainer doesn't go more
 # than ~10s without being noticed.
 _WATCHDOG_INTERVAL_SECONDS: float = 10.0
-# Cap on auto-restart attempts per job. A persistently-crashing trainer
-# (bad checkpoint, broken config) is a real user problem -- silently
-# spinning up doomed processes forever is worse than surfacing the failure.
+# Cap on auto-restart attempts per *rolling 10-minute window*. A
+# persistently-crashing trainer (bad checkpoint, broken config) is a real
+# user problem -- silently spinning up doomed processes forever is worse
+# than surfacing the failure. The counter resets after the window passes
+# without a fresh crash, so legitimate long-running jobs that happen to
+# crash once every few hours still get auto-recovered.
 _WATCHDOG_MAX_RESTARTS: int = 3
+_WATCHDOG_RESTART_WINDOW_SECONDS: float = 600.0
 
 _LOG = logging.getLogger("kivski_api.session")
 
@@ -130,8 +134,17 @@ class TrainingJob:
     # explicitly calls /api/training/stop so the watchdog won't auto-
     # restart what was intentionally stopped. ``restart_count`` caps the
     # number of crashes we'll silently recover from per job.
+    # ``handled`` is set by the watchdog the first time it processed a
+    # job's exit -- once True, subsequent poll cycles skip the job so we
+    # never spawn cascading restarts from the same crash. ``last_crash``
+    # / ``last_crash_reason`` surface the parsed CRASH_REASON.txt content
+    # to /api/training/status so the frontend can render a clear warning
+    # instead of just "exit code 1".
     stop_requested: bool = False
     restart_count: int = 0
+    handled: bool = False
+    last_crash: float | None = None
+    last_crash_reason: dict[str, Any] | None = None
 
     def is_running(self) -> bool:
         if self.process is None:
@@ -512,6 +525,9 @@ class SessionRegistry:
         self.sessions: dict[str, MatchSession] = {}
         self.training: dict[str, TrainingJob] = {}
         self.loaded_checkpoint: str | None = None
+        # Set by ``TrainingWatchdog.start`` so the routes layer can read
+        # ``last_crash_reason`` without importing the watchdog class.
+        self.watchdog: TrainingWatchdog | None = None
 
     # ----- Matches -----------------------------------------------------
 
@@ -627,6 +643,22 @@ class TrainingWatchdog:
     fresh ``python -m scripts.train train`` re-using the same config
     and ``--resume``-ing from the newest checkpoint on disk.
 
+    The restart budget is a rolling 3-attempts-per-10-minute window.
+    Old attempts that fall outside the window are pruned so a long-
+    running job that crashes once a day still gets recovered. When the
+    budget is exhausted the watchdog logs a clear stop message and
+    refuses to spawn further restarts; the user must intervene (delete
+    the corrupt checkpoint, fix the config, restart manually).
+
+    Critical correctness: every crashed job is processed *exactly once*
+    via ``TrainingJob.handled``. Without this the v0.5.0 watchdog
+    re-spawned the same crashed parent on every 10-second poll, which
+    is the bug that filled the disk with ``watchdog-*`` dirs and OOM'd
+    the host. The :data:`CheckpointIncompatibleError` short-circuit (read
+    from the trainer's ``CRASH_REASON.txt``) also prevents auto-resume
+    from the offending checkpoint -- one extra restart without
+    ``--resume`` is allowed, then the budget kicks in.
+
     Implementation note: spawning the trainer requires the route-layer
     helpers (``_find_resumable_checkpoint``, ``_log_dir``, ...) which
     would create an import cycle if imported at module load. We import
@@ -637,17 +669,30 @@ class TrainingWatchdog:
         self._registry = registry
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event = asyncio.Event()
+        # Rolling crash log -- timestamps of every auto-restart we
+        # triggered for *any* job in this watchdog's lifetime. We trim
+        # entries older than _WATCHDOG_RESTART_WINDOW_SECONDS each tick
+        # so the budget is always evaluated against the recent past.
+        self._recent_restarts: list[float] = []
+        # Latest CRASH_REASON we observed; surfaced to the UI via
+        # /api/training/status (``last_crash_reason``).
+        self._last_crash_reason: dict[str, Any] | None = None
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
         self._stop_event = asyncio.Event()
+        self._recent_restarts.clear()
+        # Make ourselves discoverable from the routes layer without
+        # forcing an import cycle.
+        self._registry.watchdog = self
         loop = asyncio.get_event_loop()
         self._task = loop.create_task(self._run(), name="training-watchdog")
         _LOG.info(
-            "TrainingWatchdog started (interval=%.1fs, max_restarts=%d)",
+            "TrainingWatchdog started (interval=%.1fs, max_restarts=%d/%.0fmin)",
             _WATCHDOG_INTERVAL_SECONDS,
             _WATCHDOG_MAX_RESTARTS,
+            _WATCHDOG_RESTART_WINDOW_SECONDS / 60.0,
         )
 
     async def stop(self) -> None:
@@ -659,6 +704,11 @@ class TrainingWatchdog:
         except (TimeoutError, asyncio.CancelledError):
             self._task.cancel()
         self._task = None
+
+    @property
+    def last_crash_reason(self) -> dict[str, Any] | None:
+        """Read-only handle for the routes layer to surface to the UI."""
+        return dict(self._last_crash_reason) if self._last_crash_reason else None
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -672,6 +722,9 @@ class TrainingWatchdog:
                 continue
 
     def _check_once(self) -> None:
+        # Trim restart timestamps that fell out of the rolling window.
+        cutoff = time.time() - _WATCHDOG_RESTART_WINDOW_SECONDS
+        self._recent_restarts = [t for t in self._recent_restarts if t >= cutoff]
         for job in list(self._registry.training.values()):
             self._maybe_restart(job)
 
@@ -685,17 +738,92 @@ class TrainingWatchdog:
         if job.exit_code is None:
             return  # process never started; nothing to recover
         if job.exit_code == 0:
-            return  # clean exit, training finished normally
-        if job.restart_count >= _WATCHDOG_MAX_RESTARTS:
+            # Clean exit: mark handled so we never look at it again.
+            job.handled = True
+            return
+        if job.handled:
+            # We've already either restarted this job or refused to --
+            # never re-process the same crashed process or we'll cascade.
+            return
+
+        # First time we're seeing this crash: mark handled *up front* so a
+        # second poll cycle can't double-spawn even if _restart_job throws.
+        job.handled = True
+        job.last_crash = time.time()
+        crash_reason = self._read_crash_reason(job)
+        job.last_crash_reason = crash_reason
+        if crash_reason is not None:
+            self._last_crash_reason = crash_reason
+
+        # Hard global budget. We count every restart we triggered, not
+        # per-job: a cascade of doomed restarts on freshly-spawned jobs
+        # still hits the limit because they share this counter.
+        if len(self._recent_restarts) >= _WATCHDOG_MAX_RESTARTS:
+            tail = (
+                crash_reason.get("message")
+                if crash_reason and crash_reason.get("message")
+                else f"exit code {job.exit_code}"
+            )
             _LOG.warning(
-                "TrainingWatchdog: job %s exhausted restart budget (exit=%s)",
-                job.job_id,
-                job.exit_code,
+                "TrainingWatchdog stopping after %d failed restarts within %.0f min. "
+                "Last error: %s. Delete corrupted checkpoint or restart training "
+                "manually.",
+                _WATCHDOG_MAX_RESTARTS,
+                _WATCHDOG_RESTART_WINDOW_SECONDS / 60.0,
+                tail,
             )
             return
-        self._restart_job(job)
 
-    def _restart_job(self, job: TrainingJob) -> None:
+        self._restart_job(job, crash_reason)
+
+    @staticmethod
+    def _read_crash_reason(job: TrainingJob) -> dict[str, Any] | None:
+        """Parse ``models/logs/<run>/CRASH_REASON.txt`` if the trainer wrote one.
+
+        Returns ``None`` when the file is missing or unreadable -- callers
+        should treat that as "transient generic crash". The format is a
+        small ``key: value`` header followed by a blank line and a free-
+        form message; we extract the ``category`` field (the only one the
+        watchdog acts on) plus the message body for UI display.
+        """
+        if job.metrics_jsonl_path is None:
+            return None
+        # CRASH_REASON.txt lives next to metrics.jsonl in models/logs/<run>.
+        run_dir = job.metrics_jsonl_path.parent
+        crash_path = run_dir / "CRASH_REASON.txt"
+        if not crash_path.is_file():
+            return None
+        try:
+            raw = crash_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        header: dict[str, str] = {}
+        body_lines: list[str] = []
+        in_body = False
+        for line in raw.splitlines():
+            if not in_body and not line.strip():
+                in_body = True
+                continue
+            if in_body:
+                body_lines.append(line)
+                continue
+            if ":" in line:
+                k, _, v = line.partition(":")
+                header[k.strip()] = v.strip()
+        return {
+            "category": header.get("category", "unknown"),
+            "source_checkpoint": header.get("source_checkpoint"),
+            "run_name": header.get("run_name"),
+            "episode": header.get("episode"),
+            "timestamp": header.get("timestamp"),
+            "message": "\n".join(body_lines).strip(),
+        }
+
+    def _restart_job(
+        self,
+        job: TrainingJob,
+        crash_reason: dict[str, Any] | None,
+    ) -> None:
         # Lazy import to avoid the routes layer importing session and vice
         # versa at module-load time.
         from kivski_api.routes.training import (
@@ -704,8 +832,30 @@ class TrainingWatchdog:
             _repo_root,
         )
 
-        resume_target = _find_resumable_checkpoint()
-        resume_str = str(resume_target) if resume_target is not None else job.resume_from
+        # If the crash was caused by an incompatible checkpoint we MUST NOT
+        # auto-resume from it again -- the next process would crash on the
+        # very same size-mismatch error, immediately consume another
+        # restart slot, and the cascade we set out to stop would resume.
+        # Strip the --resume and let the trainer start fresh instead.
+        incompatible = (
+            crash_reason is not None
+            and crash_reason.get("category") == "incompatible_checkpoint"
+        )
+
+        if incompatible:
+            resume_str: str | None = None
+            _LOG.warning(
+                "TrainingWatchdog: incompatible checkpoint detected for job %s, "
+                "restarting WITHOUT --resume (fresh weights). Source: %s",
+                job.job_id,
+                crash_reason.get("source_checkpoint") if crash_reason else None,
+            )
+        else:
+            resume_target = _find_resumable_checkpoint()
+            resume_str = (
+                str(resume_target) if resume_target is not None else job.resume_from
+            )
+
         new_job_id = uuid.uuid4().hex[:12]
         log_path = _log_dir() / f"train-{new_job_id}.log"
 
@@ -725,12 +875,17 @@ class TrainingWatchdog:
         metrics_jsonl_path = _repo_root() / "models" / "logs" / run_name / "metrics.jsonl"
         cmd.extend(["--run-name", run_name, "--telemetry", "all"])
 
+        # Pre-increment the rolling counter so a Popen exception still
+        # consumes a slot -- otherwise a broken spawn could loop forever.
+        self._recent_restarts.append(time.time())
+
         _LOG.warning(
-            "TrainingWatchdog: restarting crashed job %s (exit=%s, attempt=%d/%d) -> %s",
+            "TrainingWatchdog: restarting crashed job %s (exit=%s, attempt=%d/%d in %.0f min) -> %s",
             job.job_id,
             job.exit_code,
-            job.restart_count + 1,
+            len(self._recent_restarts),
             _WATCHDOG_MAX_RESTARTS,
+            _WATCHDOG_RESTART_WINDOW_SECONDS / 60.0,
             " ".join(cmd),
         )
         try:

@@ -48,6 +48,9 @@ from kivski_agents.metrics import (
     episode_stats_to_dict,
     train_metrics_to_dict,
 )
+from kivski_agents.persistence.checkpoint_compat import (
+    CheckpointIncompatibleError,
+)
 from kivski_agents.policy_runner import PolicyBundle, PolicyRunner
 from kivski_agents.telemetry import NoOpSink, TelemetrySink
 from kivski_agents.training.curriculum import CurriculumManager, RewardCurriculumManager
@@ -404,7 +407,8 @@ class Trainer:
         )
         path = self.tcfg.checkpoint_dir / f"main_ep_{int(episode)}.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        saved = Path(self.mappo.save(path, metadata=meta))
+        env_shape = self._current_env_shape()
+        saved = Path(self.mappo.save(path, metadata=meta, env_shape=env_shape))
         # Track the most recent on-disk checkpoint so the best-promotion
         # branch can copy it as a single atomic op.
         self._latest_per_episode_ckpt: Path = saved
@@ -413,8 +417,25 @@ class Trainer:
         return saved
 
     def load_checkpoint(self, path: Path) -> dict[str, Any]:
-        """Restore the :class:`MAPPOTrainer` state. Returns the saved metadata."""
-        meta = self.mappo.load(path)
+        """Restore the :class:`MAPPOTrainer` state. Returns the saved metadata.
+
+        Raises :class:`CheckpointIncompatibleError` (re-raised from
+        :meth:`MAPPOTrainer.load`) when the checkpoint's saved
+        ``model_arch`` or ``env_shape`` don't match the currently-built
+        model. The trainer also writes a ``CRASH_REASON.txt`` in the run's
+        log dir so the API watchdog can refuse to auto-resume from the
+        offending checkpoint instead of looping forever.
+        """
+        env_shape = self._current_env_shape()
+        try:
+            meta = self.mappo.load(path, env_shape=env_shape)
+        except CheckpointIncompatibleError as exc:
+            self._write_crash_reason(
+                category="incompatible_checkpoint",
+                message=str(exc),
+                source_checkpoint=str(path),
+            )
+            raise
         if "episode" in meta:
             self.episode_count = int(meta["episode"])
         if "update_step" in meta:
@@ -422,6 +443,53 @@ class Trainer:
         if "env_steps" in meta:
             self.env_steps = int(meta["env_steps"])
         return dict(meta)
+
+    # ------------------------------------------------------------------
+    # Env-shape / crash-reason helpers (used by load_checkpoint + tests)
+    # ------------------------------------------------------------------
+
+    def _current_env_shape(self) -> dict[str, Any]:
+        """Snapshot the active vec_env shape for compat validation."""
+        return {
+            "obs_dim": int(self.vec_env.obs_dim),
+            "n_heads": int(self.vec_env.n_heads),
+            "team_size": int(self.active_cfg.simulation.team_size),
+        }
+
+    def _write_crash_reason(
+        self,
+        *,
+        category: str,
+        message: str,
+        source_checkpoint: str | None = None,
+    ) -> Path | None:
+        """Persist a ``CRASH_REASON.txt`` so the API watchdog can read it.
+
+        The file lives at ``log_dir/<run>/CRASH_REASON.txt`` and contains
+        a small, parseable header (``category: ...``) followed by a free-
+        form ``message``. The watchdog parses the header and short-
+        circuits its auto-resume logic when the category is
+        ``incompatible_checkpoint``. Best-effort -- any I/O failure is
+        swallowed so we never mask the original exception.
+        """
+        try:
+            log_root = Path(self.tcfg.log_dir)
+            run_dir = log_root / (self.tcfg.run_name or "unnamed")
+            run_dir.mkdir(parents=True, exist_ok=True)
+            out = run_dir / "CRASH_REASON.txt"
+            header_lines = [
+                f"category: {category}",
+                f"timestamp: {time.time():.3f}",
+                f"run_name: {self.tcfg.run_name or 'unnamed'}",
+                f"episode: {int(self.episode_count)}",
+            ]
+            if source_checkpoint is not None:
+                header_lines.append(f"source_checkpoint: {source_checkpoint}")
+            header = "\n".join(header_lines)
+            out.write_text(f"{header}\n\n{message}\n", encoding="utf-8")
+            return out
+        except OSError:
+            return None
 
     # ------------------------------------------------------------------
     # Best-checkpoint promotion + retention
@@ -515,6 +583,7 @@ class Trainer:
                         "run_name": self.tcfg.run_name,
                         "timestamp": float(time.time()),
                     },
+                    env_shape=self._current_env_shape(),
                 )
             except Exception:
                 return

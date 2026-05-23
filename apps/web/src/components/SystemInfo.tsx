@@ -95,11 +95,26 @@ const Row = ({
   </div>
 );
 
+interface TrainingCrashReason {
+  category?: string | null;
+  source_checkpoint?: string | null;
+  run_name?: string | null;
+  episode?: string | null;
+  timestamp?: string | null;
+  message?: string | null;
+}
+
+interface TrainingStatusPayload {
+  last_crash_reason?: TrainingCrashReason | null;
+}
+
 const SystemInfo = () => {
   const [info, setInfo] = useState<SystemInfoPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
   const [latestCkpt, setLatestCkpt] = useState<CheckpointInfo | null>(null);
+  const [crashReason, setCrashReason] =
+    useState<TrainingCrashReason | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -151,6 +166,34 @@ const SystemInfo = () => {
     };
   }, []);
 
+  // Poll /api/training/status for `last_crash_reason`. When the watchdog
+  // has recorded an incompatible-checkpoint crash (or anything else
+  // unrecoverable) we render a prominent banner so the user is not left
+  // wondering why the trainer process is idle.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/training/status", {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as TrainingStatusPayload;
+        if (!alive) return;
+        setCrashReason(data.last_crash_reason ?? null);
+      } catch {
+        // Network blip; keep the previous value visible so the warning
+        // doesn't flicker away under transient errors.
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, POLL_INTERVAL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
   if (!info && !error) {
     return (
       <div className="flex h-full items-center justify-center px-4 text-center text-xs text-kivski-muted">
@@ -196,6 +239,44 @@ const SystemInfo = () => {
 
   return (
     <div className="flex flex-col gap-2 p-2 text-xs">
+      {/* Training crash warning (incompat checkpoint, etc.) */}
+      {crashReason && crashReason.category ? (
+        <section
+          className="panel border border-kivski-hp-low/70 bg-kivski-hp-low/10 p-2"
+          role="alert"
+        >
+          <div className="mb-1 flex items-baseline justify-between">
+            <span className="text-[10px] uppercase tracking-widest text-kivski-hp-low">
+              Training stopped
+            </span>
+            <span className="stat text-kivski-hp-low">
+              {crashReason.category}
+            </span>
+          </div>
+          {crashReason.category === "incompatible_checkpoint" ? (
+            <p className="text-[11px] leading-tight text-kivski-text">
+              Auto-resume skipped: the saved checkpoint
+              {crashReason.source_checkpoint ? (
+                <>
+                  {" "}(
+                  <span className="stat" title={crashReason.source_checkpoint}>
+                    {crashReason.source_checkpoint.split(/[\\/]/).pop()}
+                  </span>
+                  )
+                </>
+              ) : null}{" "}
+              is not compatible with the current model architecture. Delete
+              it or start a fresh run.
+            </p>
+          ) : (
+            <p className="text-[11px] leading-tight text-kivski-text">
+              {crashReason.message?.split("\n")[0] ??
+                "Trainer crashed with an unrecoverable error."}
+            </p>
+          )}
+        </section>
+      ) : null}
+
       {/* CPU */}
       <section className="panel p-2">
         <div className="mb-1 flex items-baseline justify-between">

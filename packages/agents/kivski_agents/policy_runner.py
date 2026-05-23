@@ -35,6 +35,10 @@ import torch
 from kivski_sim.config import KivskiConfig
 
 from kivski_agents.networks.actor_critic import KivskiActorCritic
+from kivski_agents.persistence.checkpoint_compat import (
+    CheckpointIncompatibleError,
+    check_compat,
+)
 
 __all__ = ["PolicyBundle", "PolicyRunner"]
 
@@ -212,8 +216,22 @@ class PolicyBundle:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_checkpoint(cls, path: str | Path) -> PolicyBundle:
-        """Load a checkpoint saved by :meth:`MAPPOTrainer.save`."""
+    def from_checkpoint(
+        cls,
+        path: str | Path,
+        expected: dict[str, Any] | None = None,
+    ) -> PolicyBundle:
+        """Load a checkpoint saved by :meth:`MAPPOTrainer.save`.
+
+        When ``expected`` is provided (``{"model_arch": ..., "env_shape": ...}``)
+        the saved metadata is validated against it via
+        :func:`check_compat`. On mismatch we raise
+        :class:`CheckpointIncompatibleError` -- this is the same error the
+        trainer's :meth:`MAPPOTrainer.load` raises, so the watchdog's
+        ``CRASH_REASON.txt`` short-circuit applies uniformly whether the
+        load happens inside the trainer process or in the API server's
+        inference path.
+        """
         ckpt_path = Path(path)
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         model_init = dict(ckpt.get("model_init", {}))
@@ -224,6 +242,10 @@ class PolicyBundle:
         # shapes if it was not stored.
         if not model_init:
             raise ValueError(f"Checkpoint {ckpt_path} is missing 'model_init'; cannot reconstruct model.")
+        if expected and meta and "model_arch" in meta:
+            # ``check_compat`` raises CheckpointIncompatibleError with a
+            # human-friendly mismatch list when fields disagree.
+            check_compat(meta, expected, source=ckpt_path.name)
         return cls(
             model_state=dict(ckpt["model"]),
             model_init=model_init,
@@ -253,7 +275,14 @@ class PolicyBundle:
         }
         kwargs = {k: v for k, v in init.items() if k in allowed}
         model = KivskiActorCritic(**kwargs)
-        model.load_state_dict(self.model_state)
+        try:
+            model.load_state_dict(self.model_state)
+        except RuntimeError as exc:
+            # Translate the cryptic "size mismatch" into a category the
+            # watchdog / CRASH_REASON pipeline recognises.
+            raise CheckpointIncompatibleError(
+                f"PolicyBundle state_dict cannot be loaded into model: {exc}"
+            ) from exc
         return PolicyRunner(model=model, device=device, deterministic=deterministic)
 
     def save(self, path: str | Path) -> Path:
@@ -283,11 +312,32 @@ class PolicyBundle:
         cfg: KivskiConfig,
         metadata: dict[str, Any] | None = None,
     ) -> PolicyBundle:
-        """Build a bundle from a live model + config (for inline snapshots)."""
+        """Build a bundle from a live model + config (for inline snapshots).
+
+        The returned bundle always embeds a strict ``model_arch`` /
+        ``env_shape`` block in its ``metadata`` so a subsequent
+        :meth:`from_checkpoint` with an ``expected={...}`` argument can
+        validate the snapshot before any state_dict load -- matching what
+        :meth:`MAPPOTrainer.save` writes for regular checkpoints.
+        """
         try:
             cfg_dict = cfg.model_dump()
         except AttributeError:  # pragma: no cover - pydantic v1 fallback
             cfg_dict = asdict(cfg)  # type: ignore[arg-type]
+        merged_meta: dict[str, Any] = dict(metadata or {})
+        merged_meta.setdefault("kivski_version", "0.4.0")
+        merged_meta.setdefault("timestamp", time.time())
+        merged_meta["schema_version"] = 1
+        merged_meta["model_arch"] = {
+            "hidden_size": int(model.hidden_size),
+            "comm_value_dim": int(model.comm_value_dim),
+            "gru_layers": int(model.gru_layers),
+        }
+        merged_meta["env_shape"] = {
+            "obs_dim": int(model.obs_dim),
+            "n_heads": int(len(model.action_dims)),
+            "team_size": int(cfg.simulation.team_size),
+        }
         return cls(
             model_state={k: v.detach().cpu() for k, v in model.state_dict().items()},
             model_init={
@@ -303,5 +353,5 @@ class PolicyBundle:
                 "actor_embedding_dim": int(model.actor_embedding_dim),
             },
             config=cfg_dict,
-            metadata=dict(metadata or {}),
+            metadata=merged_meta,
         )

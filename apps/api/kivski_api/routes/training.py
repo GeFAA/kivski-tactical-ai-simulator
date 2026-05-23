@@ -296,8 +296,22 @@ async def stop_training() -> dict[str, Any]:
 
 @router.get("/status")
 async def training_status() -> dict[str, Any]:
-    """Latest job snapshot + tail of its log."""
+    """Latest job snapshot + tail of its log + last crash reason.
+
+    The ``last_crash_reason`` field carries the parsed CRASH_REASON.txt
+    the trainer wrote on an unrecoverable error (typically
+    ``incompatible_checkpoint``). The frontend renders a red warning
+    banner whenever this is non-null so the user knows why auto-restart
+    was suppressed.
+    """
     job = REGISTRY.latest_training()
+    crash_reason: dict[str, Any] | None = None
+    # Latest job's own reason wins; fall back to the watchdog's global
+    # latest so users still see something after the job dict turns over.
+    if job is not None and job.last_crash_reason:
+        crash_reason = job.last_crash_reason
+    elif REGISTRY.watchdog is not None:
+        crash_reason = REGISTRY.watchdog.last_crash_reason
     if job is None:
         return {
             "running": False,
@@ -305,6 +319,7 @@ async def training_status() -> dict[str, Any]:
             "pid": None,
             "started_at": 0.0,
             "log_tail": [],
+            "last_crash_reason": crash_reason,
         }
     return {
         "running": job.is_running(),
@@ -317,6 +332,7 @@ async def training_status() -> dict[str, Any]:
         "resume_from": job.resume_from,
         "log_tail": job.tail_log(50),
         "log_path": str(job.log_path),
+        "last_crash_reason": crash_reason,
     }
 
 
