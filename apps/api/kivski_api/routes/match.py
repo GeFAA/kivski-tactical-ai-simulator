@@ -34,9 +34,7 @@ class NewMatchBody(BaseModel):
     )
     auto_reload_blue: bool = Field(
         default=False,
-        description=(
-            "Same as auto_reload_yellow but for the blue team."
-        ),
+        description=("Same as auto_reload_yellow but for the blue team."),
     )
 
 

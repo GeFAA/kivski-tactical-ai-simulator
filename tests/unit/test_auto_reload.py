@@ -147,9 +147,7 @@ def test_hot_swap_no_op_when_flag_off(ckpt_dir: Path, monkeypatch) -> None:
     assert session.policy_yellow is initial
 
 
-def test_hot_swap_replaces_policy_when_newer_ckpt_available(
-    ckpt_dir: Path, monkeypatch
-) -> None:
+def test_hot_swap_replaces_policy_when_newer_ckpt_available(ckpt_dir: Path, monkeypatch) -> None:
     """A newer .pt on disk plus auto_reload=True must hot-swap the adapter."""
     initial_ckpt = _write_dummy_ckpt(ckpt_dir, "ep_0001", mtime=1_700_000_000.0)
     _, session = _make_minimal_match(
@@ -195,9 +193,7 @@ def test_hot_swap_idempotent_when_same_path(ckpt_dir: Path, monkeypatch) -> None
     assert session.policy_yellow is before
 
 
-def test_hot_swap_no_op_when_no_checkpoint_on_disk(
-    ckpt_dir: Path, monkeypatch
-) -> None:
+def test_hot_swap_no_op_when_no_checkpoint_on_disk(ckpt_dir: Path, monkeypatch) -> None:
     """An empty checkpoint dir is allowed; helper must short-circuit."""
     # Set up a session that *thinks* it's tracking a ckpt path.
     _, session = _make_minimal_match(
@@ -215,9 +211,7 @@ def test_hot_swap_no_op_when_no_checkpoint_on_disk(
     assert swapped is False
 
 
-def test_hot_swap_broadcasts_policy_reload_event(
-    ckpt_dir: Path, monkeypatch
-) -> None:
+def test_hot_swap_broadcasts_policy_reload_event(ckpt_dir: Path, monkeypatch) -> None:
     """A successful swap must emit a ``policy_reload`` WS event for the UI."""
     _write_dummy_ckpt(ckpt_dir, "ep_0001", mtime=1_700_000_000.0)
     _, session = _make_minimal_match(
@@ -255,9 +249,7 @@ def test_hot_swap_broadcasts_policy_reload_event(
 # ---------------------------------------------------------------------------
 
 
-def test_create_match_normalises_flag_for_non_checkpoint_side(
-    ckpt_dir: Path, monkeypatch
-) -> None:
+def test_create_match_normalises_flag_for_non_checkpoint_side(ckpt_dir: Path, monkeypatch) -> None:
     """auto_reload on a Random side must be silently dropped to False."""
     _write_dummy_ckpt(ckpt_dir, "ep_0001", mtime=1_700_000_000.0)
     _, session = _make_minimal_match(

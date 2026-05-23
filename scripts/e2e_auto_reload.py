@@ -112,8 +112,7 @@ async def _drive_match(fake_ckpt_name_holder: list[Path]) -> int:
     print(f"[e2e] match created: {match_id}, auto_reload_yellow={result.get('auto_reload_yellow')}")
     if not result.get("auto_reload_yellow"):
         print(
-            "[e2e] FAIL: backend did not echo auto_reload_yellow=true. "
-            f"Response: {result}",
+            f"[e2e] FAIL: backend did not echo auto_reload_yellow=true. Response: {result}",
             file=sys.stderr,
         )
         return 1
@@ -174,10 +173,7 @@ async def _drive_match(fake_ckpt_name_holder: list[Path]) -> int:
             data = received.get("data") or {}
             side = data.get("side")
             name = data.get("name")
-            print(
-                f"[e2e] received policy_reload event after {elapsed:.1f}s: "
-                f"{side} -> {name} OK"
-            )
+            print(f"[e2e] received policy_reload event after {elapsed:.1f}s: {side} -> {name} OK")
             if name != expected_name:
                 print(
                     f"[e2e] FAIL: expected name={expected_name!r}, got {name!r}",

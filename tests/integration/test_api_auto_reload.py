@@ -82,9 +82,7 @@ def ckpt_sandbox(monkeypatch, tmp_path: Path) -> _CkptSandbox:
 # ---------------------------------------------------------------------------
 
 
-def test_new_match_echoes_auto_reload_flags(
-    client: TestClient, ckpt_sandbox: _CkptSandbox
-) -> None:
+def test_new_match_echoes_auto_reload_flags(client: TestClient, ckpt_sandbox: _CkptSandbox) -> None:
     """The response must surface the *effective* auto_reload flags."""
     initial = ckpt_sandbox.publish("ep_0010")
     assert initial.is_file()
@@ -132,9 +130,7 @@ def test_new_match_normalises_auto_reload_for_random_side(
     assert body["auto_reload_blue"] is False
 
 
-def test_snapshot_endpoint_surfaces_auto_reload(
-    client: TestClient, ckpt_sandbox: _CkptSandbox
-) -> None:
+def test_snapshot_endpoint_surfaces_auto_reload(client: TestClient, ckpt_sandbox: _CkptSandbox) -> None:
     """``GET /api/match/{id}/snapshot`` must return the auto_reload flags."""
     ckpt_sandbox.publish("ep_0010")
     create = client.post(
@@ -198,9 +194,7 @@ def test_session_hot_swap_fires_after_publishing_new_checkpoint(
 # ---------------------------------------------------------------------------
 
 
-def test_websocket_receives_policy_reload_event(
-    client: TestClient, ckpt_sandbox: _CkptSandbox
-) -> None:
+def test_websocket_receives_policy_reload_event(client: TestClient, ckpt_sandbox: _CkptSandbox) -> None:
     """A live WS subscriber sees the ``policy_reload`` frame on swap."""
     initial = ckpt_sandbox.publish("ep_0010")
     assert initial.is_file()

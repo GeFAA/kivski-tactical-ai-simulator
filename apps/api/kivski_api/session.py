@@ -465,9 +465,7 @@ class MatchSession:
                         await self._maybe_hot_swap_policy("yellow")
                         await self._maybe_hot_swap_policy("blue")
                     except Exception:
-                        _LOG.exception(
-                            "Match %s auto-reload raised unexpectedly", self.id
-                        )
+                        _LOG.exception("Match %s auto-reload raised unexpectedly", self.id)
 
                 if done:
                     await self._broadcast_event({"type": "match_done", "match_id": self.id})
