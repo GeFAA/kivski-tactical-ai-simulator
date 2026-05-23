@@ -9,6 +9,7 @@ import type {
   BombSnapshot,
   EventItem,
   MapData,
+  MessageItem,
   WeaponKind,
 } from "@/lib/types";
 import CommsOverlay from "@/components/CommsOverlay";
@@ -246,61 +247,184 @@ const shortName = (a: AgentSnapshot): string => {
   return `${prefix}${idx}`;
 };
 
+// ----- Weapon silhouette palette (v2 polish) ----------------------------
+//
+// All firearm silhouettes share a four-tone palette:
+//   - W_BODY     : dark mainframe / receiver
+//   - W_HIGHLIGHT: lighter barrel / slide
+//   - W_ACCENT   : cyan optics / electronic parts
+//   - W_OUTLINE  : near-black stroke around the silhouette
+//
+// Sizes are in *world units*. The world container is fit to map size, so
+// 1 unit ≈ 1 grid tile; weapons therefore measure ~2-3 units wide and
+// render around 14-20 px at typical zoom levels.
+const W_BODY = 0x3a4250;
+const W_HIGHLIGHT = 0x6b7888;
+const W_ACCENT = 0x4d9eff;
+const W_OUTLINE = 0x1a1f2a;
+const W_GRIP = 0x2a2e38;
+const W_STROKE = 0.06;
+const W_STROKE_FINE = 0.045;
+
 /**
- * Draw a small weapon silhouette into ``g`` centred at (0, 0). Sizes
- * are in *world units* — the parent container is scaled by the world
- * transform. The shapes are deliberately schematic (no photo-realism)
- * so they read at small sizes.
+ * Draw a small weapon silhouette into ``g`` centred at (0, 0).
+ *
+ * The shapes are deliberately schematic — they read clearly even at
+ * 14-20 px and stay legible when the world is zoomed out. Every kind
+ * uses the shared palette (body / highlight / accent / outline) so the
+ * set feels visually coherent.
+ *
+ * Default orientation: weapon points along **+x**. We offset the whole
+ * silhouette by `OX` so it sits clearly *off* the body circle and reads
+ * as a held weapon rather than overlapping with the player dot.
  */
+const OX = 1.0; // offset from body origin so the weapon clears the dot
 const drawWeaponShape = (g: Graphics, kind: WeaponKind): void => {
   g.clear();
-  const body = COLORS.weaponBody;
-  const edge = COLORS.weaponEdge;
-  const wStroke = 0.07;
 
   switch (kind) {
     case "knife": {
-      // Triangular blade + small grip.
-      g.poly([-0.8, 0.3, 0.6, -0.1, -0.4, -0.4])
-        .fill({ color: body })
-        .stroke({ color: edge, width: wStroke });
-      g.rect(-1.0, 0.15, 0.3, 0.25).fill({ color: 0x4a3024 });
+      // Narrow blade pointing +x, short dark grip behind it.
+      // Blade: elongated triangle (length ~1.1, base 0.35).
+      g.poly([OX + 0.7, 0, OX - 0.5, 0.18, OX - 0.5, -0.18])
+        .fill({ color: W_HIGHLIGHT })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Grip.
+      g.rect(OX - 0.95, -0.13, 0.45, 0.26)
+        .fill({ color: W_GRIP })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Cross-guard.
+      g.rect(OX - 0.52, -0.22, 0.08, 0.44).fill({ color: W_OUTLINE });
       break;
     }
     case "pistol": {
-      // L-shape: slide on top + grip down-right.
-      g.rect(-1.0, -0.35, 1.6, 0.45).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(0.2, 0.1, 0.45, 0.7).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // L-shape: slide (barrel) on top + grip below + trigger guard.
+      g.rect(OX - 0.6, -0.22, 1.5, 0.34)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX + 0.6, -0.18, 0.3, 0.26).fill({ color: W_HIGHLIGHT });
+      // Grip below.
+      g.rect(OX - 0.2, 0.06, 0.4, 0.62)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX + 0.22, 0.06, 0.16, 0.2).fill({ color: W_OUTLINE });
+      g.rect(OX - 0.1, -0.32, 0.14, 0.1).fill({ color: W_HIGHLIGHT });
       break;
     }
     case "smg": {
-      // Compact rectangle + stock fold.
-      g.rect(-1.3, -0.35, 2.0, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(-1.7, -0.25, 0.45, 0.35).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(-0.3, 0.2, 0.35, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // Compact body + grip + magazine drop + short stock fold behind.
+      g.rect(OX - 0.9, -0.24, 1.95, 0.42)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX + 0.75, -0.18, 0.3, 0.28).fill({ color: W_HIGHLIGHT });
+      // Folding stock.
+      g.rect(OX - 1.35, -0.14, 0.45, 0.22)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Pistol grip.
+      g.rect(OX - 0.3, 0.16, 0.32, 0.42)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Magazine.
+      g.rect(OX + 0.05, 0.18, 0.3, 0.5)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX + 0.05, 0.6, 0.3, 0.08).fill({ color: W_HIGHLIGHT });
       break;
     }
     case "rifle":
     case "ar":
     case "lmg": {
-      // Longer body + pistol grip + stock.
-      g.rect(-1.6, -0.35, 2.6, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(-2.0, -0.2, 0.4, 0.3).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(-0.2, 0.2, 0.4, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // Longer body + buttstock + scope mount + magazine.
+      // Buttstock.
+      g.rect(OX - 1.55, -0.14, 0.55, 0.3)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Receiver.
+      g.rect(OX - 1.0, -0.22, 1.85, 0.4)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Barrel extension.
+      g.rect(OX + 0.85, -0.13, 0.55, 0.2)
+        .fill({ color: W_HIGHLIGHT })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Muzzle tip.
+      g.rect(OX + 1.35, -0.1, 0.12, 0.14).fill({ color: W_OUTLINE });
+      // Scope mount on top.
+      g.rect(OX - 0.2, -0.4, 0.5, 0.2)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      g.rect(OX - 0.08, -0.36, 0.22, 0.1).fill({ color: W_ACCENT, alpha: 0.85 });
+      // Pistol grip.
+      g.rect(OX - 0.4, 0.18, 0.28, 0.4)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Magazine.
+      g.rect(OX + 0.0, 0.18, 0.4, 0.55)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX + 0.0, 0.64, 0.4, 0.09).fill({ color: W_HIGHLIGHT });
       break;
     }
     case "sniper": {
-      // Long body + scope circle on top + grip.
-      g.rect(-1.8, -0.3, 3.0, 0.45).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.circle(-0.3, -0.6, 0.35).fill({ color: 0x2a2f3a }).stroke({ color: edge, width: wStroke });
-      g.rect(0.2, 0.15, 0.4, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // Very long barrel + big scope on top + bipod feet + buttstock.
+      g.rect(OX - 1.8, -0.14, 0.6, 0.3)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX - 1.2, -0.22, 1.1, 0.4)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Long barrel.
+      g.rect(OX - 0.1, -0.13, 1.85, 0.22)
+        .fill({ color: W_HIGHLIGHT })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Muzzle brake.
+      g.rect(OX + 1.7, -0.17, 0.18, 0.3).fill({ color: W_OUTLINE });
+      // Big scope.
+      g.circle(OX - 0.4, -0.46, 0.32)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.circle(OX - 0.4, -0.46, 0.18).fill({ color: W_ACCENT, alpha: 0.9 });
+      g.circle(OX - 0.4, -0.46, 0.07).fill({ color: 0xffffff, alpha: 0.6 });
+      // Scope mount rails.
+      g.rect(OX - 0.7, -0.28, 0.6, 0.08).fill({ color: W_OUTLINE });
+      // Bipod feet (two small triangles).
+      g.poly([OX + 0.65, 0.18, OX + 0.51, 0.5, OX + 0.79, 0.5])
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      g.poly([OX + 1.1, 0.18, OX + 0.96, 0.5, OX + 1.24, 0.5])
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Pistol grip.
+      g.rect(OX - 0.8, 0.18, 0.28, 0.4)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
       break;
     }
     case "shotgun": {
-      // Body with a wider muzzle on the left.
-      g.rect(-1.6, -0.3, 2.4, 0.5).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(-1.9, -0.4, 0.4, 0.7).fill({ color: body }).stroke({ color: edge, width: wStroke });
-      g.rect(0.0, 0.2, 0.4, 0.55).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // Thick barrel + pump action below + buttstock.
+      g.rect(OX - 1.45, -0.18, 0.55, 0.36)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX - 0.9, -0.26, 0.7, 0.48)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
+      // Pump action below barrel.
+      g.rect(OX - 0.25, 0.16, 0.85, 0.18)
+        .fill({ color: W_GRIP })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Thick barrel.
+      g.rect(OX - 0.1, -0.2, 1.55, 0.32)
+        .fill({ color: W_HIGHLIGHT })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      // Muzzle bore.
+      g.circle(OX + 1.4, -0.04, 0.14)
+        .fill({ color: W_OUTLINE })
+        .stroke({ color: W_BODY, width: W_STROKE_FINE });
+      // Pistol grip.
+      g.rect(OX - 0.6, 0.22, 0.3, 0.4)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
       break;
     }
     case "grenade":
@@ -308,13 +432,81 @@ const drawWeaponShape = (g: Graphics, kind: WeaponKind): void => {
     case "smoke":
     case "molotov":
     case "c4": {
-      // Generic round/cylinder.
-      g.circle(0, 0, 0.45).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      // Round grenade body + safety lever + pin ring.
+      g.circle(OX, 0, 0.4).fill({ color: W_BODY }).stroke({ color: W_OUTLINE, width: W_STROKE });
+      g.rect(OX - 0.34, -0.42, 0.68, 0.16)
+        .fill({ color: W_HIGHLIGHT })
+        .stroke({ color: W_OUTLINE, width: W_STROKE_FINE });
+      g.circle(OX + 0.4, -0.42, 0.1).stroke({ color: W_HIGHLIGHT, width: 0.07 });
       break;
     }
     default: {
-      g.rect(-1.2, -0.3, 2.0, 0.5).fill({ color: body }).stroke({ color: edge, width: wStroke });
+      g.rect(OX - 0.9, -0.22, 1.8, 0.42)
+        .fill({ color: W_BODY })
+        .stroke({ color: W_OUTLINE, width: W_STROKE });
     }
+  }
+};
+
+/**
+ * Weapon "tier" subtle backdrop glow. Drawn into ``g`` *behind* the
+ * silhouette so we don't blow out the foreground colours. Returns true
+ * if a glow was drawn, false otherwise.
+ */
+const drawWeaponTierGlow = (g: Graphics, kind: WeaponKind): boolean => {
+  g.clear();
+  // Knife / sidearm: no glow.
+  if (kind === "knife" || kind === "pistol") return false;
+  let color = 0xffffff;
+  let alpha = 0.15;
+  let radius = 1.4;
+  switch (kind) {
+    case "smg":
+    case "shotgun":
+      color = 0xffffff;
+      alpha = 0.13;
+      radius = 1.5;
+      break;
+    case "rifle":
+    case "ar":
+    case "lmg":
+      color = 0x4d9eff;
+      alpha = 0.16;
+      radius = 1.8;
+      break;
+    case "sniper":
+      color = 0xffd24a;
+      alpha = 0.18;
+      radius = 2.0;
+      break;
+    default:
+      return false;
+  }
+  // Soft ellipse glow centred on the weapon midpoint and stretched
+  // along its +x axis.
+  g.ellipse(OX, 0, radius, radius * 0.55).fill({ color, alpha });
+  return true;
+};
+
+/** Tip x-offset (in weapon-local units) used for muzzle-flash anchoring. */
+const weaponMuzzleX = (kind: WeaponKind): number => {
+  switch (kind) {
+    case "knife":
+      return OX + 0.7;
+    case "pistol":
+      return OX + 0.95;
+    case "smg":
+      return OX + 1.1;
+    case "shotgun":
+      return OX + 1.55;
+    case "sniper":
+      return OX + 1.9;
+    case "rifle":
+    case "ar":
+    case "lmg":
+      return OX + 1.5;
+    default:
+      return OX + 1.0;
   }
 };
 
@@ -354,19 +546,39 @@ const drawDefuseKitShape = (g: Graphics): void => {
  * subscribe path, which used to be a memory leak in the previous
  * `_redrawDot` implementation that ``clear()``ed and re-stroked a flat
  * Graphics on every tick.
+ *
+ * Layout note (v2 polish): the body, weapon and facing sub-nodes are now
+ * parented to a `bobLayer` container so the walk-bob, hit-flash scale,
+ * spawn-pulse scale, and death-fade alpha can all act on one transform
+ * without disturbing the centred position labels / hp bar / progress ring.
  */
 interface PlayerNodes {
   container: Container;
+  /** Pulled-out container for body+weapon so we can scale/bob them. */
+  bobLayer: Container;
+  /** Container for the weapon group (glow + silhouette, with rotation). */
+  weaponLayer: Container;
   shadow: Graphics;
   selection: Graphics;
   body: Graphics;
   facing: Graphics;
+  weaponGlow: Graphics;
   weapon: Graphics;
+  /** Muzzle-flash drawn relative to the weapon's tip, in weaponLayer. */
+  muzzleFlash: Graphics;
   bombIcon: Graphics;
   kitIcon: Graphics;
   nameBg: Graphics;
   nameText: Text;
   hpBar: Graphics;
+  /** Plant/defuse progress ring around the body. */
+  progressRing: Graphics;
+  /** Comm-pulse ring (transient outward fade). */
+  commPulse: Graphics;
+  /** Spawn-pulse ring (transient outward fade on respawn). */
+  spawnPulse: Graphics;
+  /** Floating damage number above head (transient). */
+  damageText: Text;
   /** Most recently rendered visual key — skip redraws when unchanged. */
   visualKey: string;
   /** Current weapon kind for the cached weapon Graphics. */
@@ -375,6 +587,31 @@ interface PlayerNodes {
   selected: boolean;
   /** Currently-rendered hp fraction (lerped toward target each frame). */
   displayedHpFrac: number;
+  /** Last snapshot hp value (for damage-detection diff). */
+  lastHp: number;
+  /** Last snapshot alive state (for spawn / death detection). */
+  lastAlive: boolean;
+  /** Walk-bob phase, randomised per agent so they don't bob in lockstep. */
+  bobPhase: number;
+  /** Last known position (used for velocity estimation between snapshots). */
+  lastPos: { x: number; y: number };
+  /** Smoothed velocity magnitude — drives walk-bob amplitude scaling. */
+  speed: number;
+  // ---- transient timestamps for one-shot animations (perf.now() ms) ----
+  hitFlashStart: number;
+  damageFloatStart: number;
+  damageFloatAmount: number;
+  deathFadeStart: number;
+  /** Spawn-pulse start; 0 when not pulsing. */
+  spawnPulseStart: number;
+  /** Muzzle-flash start; 0 when not flashing. */
+  muzzleFlashStart: number;
+  /** Most-recent comm-pulse start; 0 when not pulsing. */
+  commPulseStart: number;
+  /** Color of the active comm pulse (matches comm action style). */
+  commPulseColor: number;
+  /** Last seen message-id from this agent so we trigger comm-pulse exactly once. */
+  lastCommMsgId: string | null;
 }
 
 interface AgentPosKeyframe {
@@ -406,20 +643,33 @@ interface PlayerRenderState {
    * place rather than slide across the entire map.
    */
   round: number;
+  /** Cached current bomb snapshot — drives the progress ring in the ticker. */
+  bomb: BombSnapshot | null;
+  /**
+   * Per-agent planting/defusing flags from the latest snapshot. Used by
+   * the ticker to compute the progress ring without re-reading the
+   * store on every frame.
+   */
+  actState: Map<string, { planting: boolean; defusing: boolean }>;
+  /** Most recently seen event id (avoid double-triggering muzzle flash). */
+  lastEventId: string | null;
+  /** Most recently seen message id (avoid double-triggering comm pulse). */
+  lastMessageId: string | null;
 }
 
+// Visual key drives the "do we need to rebuild static visuals" check.
+// We deliberately exclude:
+//   - facing  (only updates the weaponLayer.rotation, applied per-tick)
+//   - planting / defusing (handled via progress ring in the ticker)
 const _visualKey = (a: AgentSnapshot, isSelected: boolean): string =>
   [
     a.side,
     a.team,
     a.isAlive ? 1 : 0,
     isSelected ? 1 : 0,
-    a.facing.toFixed(2),
     a.weapons[a.activeWeaponIdx]?.kind ?? "none",
     a.hasBomb ? 1 : 0,
     a.hasDefuseKit ? 1 : 0,
-    a.isPlanting ? 1 : 0,
-    a.isDefusing ? 1 : 0,
   ].join("|");
 
 const buildPlayerNodes = (layer: Container, a: AgentSnapshot): PlayerNodes => {
@@ -429,17 +679,55 @@ const buildPlayerNodes = (layer: Container, a: AgentSnapshot): PlayerNodes => {
   container.eventMode = "static";
   container.cursor = "pointer";
 
+  // Background-ish nodes hang off the root container so they are
+  // unaffected by walk-bob / death-fade / spawn-pulse transforms.
   const shadow = new Graphics();
   shadow.zIndex = -2;
   const selection = new Graphics();
   selection.zIndex = -1;
+  const progressRing = new Graphics();
+  progressRing.zIndex = -1;
+  const commPulse = new Graphics();
+  commPulse.zIndex = -1;
+  const spawnPulse = new Graphics();
+  spawnPulse.zIndex = -1;
+
+  // Body + facing + weapon live in a dedicated "bob" layer so we can
+  // bob/scale/fade them as a unit.
+  const bobLayer = new Container();
+  bobLayer.label = "bob";
+  bobLayer.zIndex = 0;
+  bobLayer.sortableChildren = true;
+
   const body = new Graphics();
   body.zIndex = 0;
   const facing = new Graphics();
   facing.zIndex = 1;
+
+  // Weapon group: glow (behind silhouette) + silhouette + muzzle flash.
+  // The layer sits at the body's origin and *rotates* with `facing`;
+  // individual weapon shapes are drawn shifted to +x so the weapon
+  // sits roughly "in the player's hand" pointing outward. Much more
+  // readable than the v1 "static icon above the head".
+  const weaponLayer = new Container();
+  weaponLayer.label = "weapon";
+  weaponLayer.zIndex = 2;
+  weaponLayer.position.set(0, 0);
+  const weaponGlow = new Graphics();
+  weaponGlow.zIndex = -1;
   const weapon = new Graphics();
-  weapon.zIndex = 2;
-  weapon.position.set(0, -2.6);
+  weapon.zIndex = 0;
+  const muzzleFlash = new Graphics();
+  muzzleFlash.zIndex = 1;
+  muzzleFlash.visible = false;
+  weaponLayer.addChild(weaponGlow);
+  weaponLayer.addChild(weapon);
+  weaponLayer.addChild(muzzleFlash);
+
+  bobLayer.addChild(body);
+  bobLayer.addChild(facing);
+  bobLayer.addChild(weaponLayer);
+
   const bombIcon = new Graphics();
   bombIcon.zIndex = 3;
   bombIcon.position.set(1.4, -1.6);
@@ -471,45 +759,93 @@ const buildPlayerNodes = (layer: Container, a: AgentSnapshot): PlayerNodes => {
   nameText.position.set(0, 2.0);
   nameText.zIndex = 5;
 
+  // Floating damage number — built once, hidden, animated when an event hits.
+  const damageText = new Text({
+    text: "",
+    style: new TextStyle({
+      fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+      fontSize: 14,
+      fill: 0xff5d5d,
+      fontWeight: "900",
+      align: "center",
+      stroke: { color: 0x0a0e14, width: 3 },
+    }),
+    resolution: 2,
+  });
+  damageText.anchor.set(0.5, 1);
+  damageText.scale.set(1 / 7);
+  damageText.zIndex = 6;
+  damageText.visible = false;
+
   const hpBar = new Graphics();
   hpBar.zIndex = 5;
   hpBar.position.set(0, 3.55);
 
   container.addChild(shadow);
   container.addChild(selection);
-  container.addChild(body);
-  container.addChild(facing);
-  container.addChild(weapon);
+  container.addChild(progressRing);
+  container.addChild(commPulse);
+  container.addChild(spawnPulse);
+  container.addChild(bobLayer);
   container.addChild(bombIcon);
   container.addChild(kitIcon);
   container.addChild(nameBg);
   container.addChild(nameText);
+  container.addChild(damageText);
   container.addChild(hpBar);
 
   layer.addChild(container);
 
+  // Spawn-pulse on first appearance so the agent doesn't pop in cold.
+  const now = performance.now();
   return {
     container,
+    bobLayer,
+    weaponLayer,
     shadow,
     selection,
     body,
     facing,
+    weaponGlow,
     weapon,
+    muzzleFlash,
     bombIcon,
     kitIcon,
     nameBg,
     nameText,
     hpBar,
+    progressRing,
+    commPulse,
+    spawnPulse,
+    damageText,
     visualKey: "",
     weaponKind: null,
     selected: false,
     displayedHpFrac: 1,
+    lastHp: a.hp,
+    lastAlive: a.isAlive,
+    bobPhase: Math.random() * Math.PI * 2,
+    lastPos: { x: a.pos.x, y: a.pos.y },
+    speed: 0,
+    hitFlashStart: 0,
+    damageFloatStart: 0,
+    damageFloatAmount: 0,
+    deathFadeStart: 0,
+    spawnPulseStart: a.isAlive ? now : 0,
+    muzzleFlashStart: 0,
+    commPulseStart: 0,
+    commPulseColor: 0xffffff,
+    lastCommMsgId: null,
   };
 };
 
 /**
  * Refresh per-tick visual state of a single player. Only touches the
  * Graphics/Text sub-nodes — never adds or removes children.
+ *
+ * The ticker handles all *transient* animation state (walk-bob, hit
+ * flash, spawn pulse, death fade, muzzle flash, comm pulse, progress
+ * ring). This function only rebuilds the *snapshot-keyed* visuals.
  */
 const refreshPlayerVisuals = (
   nodes: PlayerNodes,
@@ -567,16 +903,19 @@ const refreshPlayerVisuals = (
       .fill({ color: 0xffffff, alpha: 0.95 });
   }
 
-  // Weapon shape — only redraw on weapon-kind change.
+  // Weapon shape + tier glow — only redraw on weapon-kind change.
   const activeWeapon = a.weapons[a.activeWeaponIdx]?.kind ?? null;
   if (activeWeapon && nodes.weaponKind !== activeWeapon) {
     drawWeaponShape(nodes.weapon, activeWeapon);
+    const drewGlow = drawWeaponTierGlow(nodes.weaponGlow, activeWeapon);
+    nodes.weaponGlow.visible = drewGlow;
     nodes.weaponKind = activeWeapon;
   }
-  nodes.weapon.visible = !!activeWeapon && a.isAlive;
-  if (nodes.weapon.visible) {
-    // Tilt slightly with facing so the weapon "follows" the player.
-    nodes.weapon.rotation = Math.sin(a.facing) * 0.18;
+  nodes.weaponLayer.visible = !!activeWeapon && a.isAlive;
+  if (nodes.weaponLayer.visible) {
+    // Weapon shapes are drawn pointing +x; rotate the whole group to
+    // match the agent's facing angle.
+    nodes.weaponLayer.rotation = a.facing;
   }
 
   // Bomb / defuse kit overlays.
@@ -598,7 +937,8 @@ const refreshPlayerVisuals = (
   // its visible size in *world units*.
   const label = shortName(a);
   if (nodes.nameText.text !== label) nodes.nameText.text = label;
-  nodes.nameText.alpha = a.isAlive ? 1 : 0.5;
+  // Name alpha is also touched by the death-fade ticker; this is the base.
+  if (a.isAlive) nodes.nameText.alpha = 1;
   const textW = nodes.nameText.width * nodes.nameText.scale.x;
   const textH = nodes.nameText.height * nodes.nameText.scale.y;
   const padX = 0.32;
@@ -613,14 +953,14 @@ const refreshPlayerVisuals = (
 
   // Selection ring — drawn at fixed radius, alpha pulse handled in ticker.
   nodes.selection.clear();
-  if (isSelected) {
+  if (isSelected && a.isAlive) {
     nodes.selection.circle(0, 0, r + 0.7).stroke({
       color: COLORS.selectionRing,
       width: 0.22,
       alpha: 1,
     });
   }
-  nodes.selection.visible = isSelected;
+  nodes.selection.visible = isSelected && a.isAlive;
 
   // Hp bar — redraws are cheap so we run them in the ticker (smooth lerp).
 };
@@ -653,11 +993,58 @@ const drawHpBar = (nodes: PlayerNodes, hpFrac: number, alive: boolean): void => 
   }
 };
 
+// Animation timing constants (ms).
+const HIT_FLASH_MS = 200;
+const DAMAGE_FLOAT_MS = 800;
+const DEATH_FADE_MS = 600;
+const SPAWN_PULSE_MS = 400;
+const MUZZLE_FLASH_MS = 180;
+const COMM_PULSE_MS = 600;
+
+const easeOutBack = (t: number): number => {
+  // Classic easeOutBack with c1 = 1.70158, c3 = c1 + 1 = 2.70158.
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  const x = t - 1;
+  return 1 + c3 * x * x * x + c1 * x * x;
+};
+
+/** Cyan/orange/etc colour lookup for comm pulses. Cheap default for `SILENT`. */
+const commActionColor = (action: string | undefined): number => {
+  switch (action) {
+    case "PING_LOCATION":
+      return 0x4d9eff;
+    case "WARN_DANGER":
+      return 0xff5d5d;
+    case "REQUEST_SUPPORT":
+      return 0xffd24a;
+    case "SUGGEST_ROTATE":
+      return 0xa78bfa;
+    case "SUGGEST_ATTACK":
+      return 0xff8c42;
+    case "SUGGEST_FALLBACK":
+      return 0x4ade80;
+    case "CONTACT_ENEMY":
+      return 0xff2a2a;
+    case "BOMBSITE_CLEAR":
+      return 0x4ade80;
+    case "ACK":
+      return 0xe2e8f0;
+    default:
+      return 0xffffff;
+  }
+};
+
 /**
  * Merge a fresh snapshot into the persistent render state. Creates /
  * removes per-agent node bundles as needed, refreshes visual state,
  * and records the previous-vs-current keyframes used by the per-frame
  * interpolator.
+ *
+ * Also runs the *snapshot-driven* animation triggers (hit-flash on hp
+ * drop, death-fade on alive→dead, spawn-pulse on dead→alive). Event /
+ * message driven triggers (muzzle flash, comm pulse) come in via the
+ * extra params and are applied to the matching agent's PlayerNodes.
  */
 const ingestPlayersSnapshot = (
   layer: Container,
@@ -665,6 +1052,9 @@ const ingestPlayersSnapshot = (
   agents: AgentSnapshot[],
   selectedId: string | null,
   round: number,
+  bomb: BombSnapshot,
+  events: EventItem[],
+  messages: MessageItem[],
   onSelect: (id: string | null) => void,
 ): void => {
   const seen = new Set<string>();
@@ -694,21 +1084,46 @@ const ingestPlayersSnapshot = (
   }
 
   const newCurr = new Map<string, AgentPosKeyframe>();
+  const now = performance.now();
   for (const a of agents) {
     seen.add(a.id);
     newCurr.set(a.id, { x: a.pos.x, y: a.pos.y, alive: a.isAlive });
     state.hpTargets.set(a.id, Math.max(0, Math.min(1, a.hp / 100)));
+    state.actState.set(a.id, { planting: a.isPlanting, defusing: a.isDefusing });
 
     const isSelected = selectedId === a.id;
     let nodes = state.nodes.get(a.id);
+    const isNew = !nodes;
     if (!nodes) {
       nodes = buildPlayerNodes(layer, a);
       state.nodes.set(a.id, nodes);
       newPrev.set(a.id, { x: a.pos.x, y: a.pos.y, alive: a.isAlive });
     }
 
-    // Click handler — always re-wire so the closure captures the latest
-    // selection state without leaking a listener registry.
+    // ---- Animation trigger detection from snapshot diffs ---------------
+    // Damage detection: hp dropped while still alive (or just died).
+    const hpDelta = a.hp - nodes.lastHp;
+    if (!isNew && hpDelta < -0.5 && nodes.lastAlive) {
+      nodes.hitFlashStart = now;
+      nodes.damageFloatStart = now;
+      nodes.damageFloatAmount = Math.round(-hpDelta);
+      nodes.damageText.text = `-${nodes.damageFloatAmount}`;
+    }
+    // Alive transitions.
+    if (!isNew && !nodes.lastAlive && a.isAlive) {
+      // Dead → alive: spawn pulse.
+      nodes.spawnPulseStart = now;
+      nodes.deathFadeStart = 0;
+    }
+    if (!isNew && nodes.lastAlive && !a.isAlive) {
+      // Alive → dead: kick off death fade.
+      nodes.deathFadeStart = now;
+    }
+    nodes.lastHp = a.hp;
+    nodes.lastAlive = a.isAlive;
+
+    // ---- Click handler — re-wire each tick so the closure captures the
+    // latest selection state without leaking a listener registry.
     nodes.container.removeAllListeners();
     const targetId = a.id;
     nodes.container.on("pointertap", () =>
@@ -721,6 +1136,12 @@ const ingestPlayersSnapshot = (
       refreshPlayerVisuals(nodes, a, isSelected);
       nodes.visualKey = vk;
     }
+    // Facing is *cheap* (just a transform), update each snapshot so the
+    // weapon snaps to the new aim direction without re-running the
+    // visual-key path.
+    if (a.isAlive && nodes.weaponLayer.visible) {
+      nodes.weaponLayer.rotation = a.facing;
+    }
   }
 
   // Tear down any agents that vanished (e.g. match reset).
@@ -731,6 +1152,7 @@ const ingestPlayersSnapshot = (
       }
       state.nodes.delete(id);
       state.hpTargets.delete(id);
+      state.actState.delete(id);
     }
   }
 
@@ -743,40 +1165,246 @@ const ingestPlayersSnapshot = (
     }
   }
 
+  // ---- Event-driven triggers (muzzle flash) -------------------------------
+  // Events arrive as newest-first list. Walk from newest to the last-seen
+  // id and trigger muzzle flash on any kill/info combat event we haven't
+  // surfaced yet. Cap iterations to avoid pathological backlog scans.
+  if (events.length > 0) {
+    const newestId = events[0].id;
+    if (newestId !== state.lastEventId) {
+      const maxScan = 20;
+      for (let i = 0; i < Math.min(events.length, maxScan); i++) {
+        const e = events[i];
+        if (e.id === state.lastEventId) break;
+        if ((e.kind === "kill" || e.kind === "info") && e.actorId) {
+          const shooter = state.nodes.get(e.actorId);
+          if (shooter) shooter.muzzleFlashStart = now;
+        }
+      }
+      state.lastEventId = newestId;
+    }
+  }
+
+  // ---- Message-driven triggers (comm pulse) -------------------------------
+  if (messages.length > 0) {
+    const newestId = messages[0].id;
+    if (newestId !== state.lastMessageId) {
+      const maxScan = 16;
+      for (let i = 0; i < Math.min(messages.length, maxScan); i++) {
+        const m = messages[i];
+        if (m.id === state.lastMessageId) break;
+        if (!m.action || m.action === "SILENT") continue;
+        const sender = state.nodes.get(m.fromId);
+        if (sender) {
+          sender.commPulseStart = now;
+          sender.commPulseColor = commActionColor(m.action);
+        }
+      }
+      state.lastMessageId = newestId;
+    }
+  }
+
   state.prev = newPrev;
   state.curr = newCurr;
-  state.receivedAt = performance.now();
+  state.receivedAt = now;
   state.round = round;
+  state.bomb = bomb;
 };
 
 /**
- * Per-frame container update. Lerps position, fades the selection ring
- * (sine pulse), and smooth-shrinks the hp bar toward its target value.
+ * Per-frame container update. Lerps position between snapshots, then
+ * runs all transient animations (walk-bob, hit-flash, damage float,
+ * death-fade, spawn-pulse, muzzle-flash, comm-pulse, progress ring,
+ * selection-ring pulse, hp-bar lerp).
+ *
+ * Performance: no `new` allocations in this path. All sub-Graphics are
+ * `clear()`-ed and re-drawn in place. The number of state lookups is
+ * bounded by the number of agents (typ. 10).
  */
 const tickPlayerPositions = (state: PlayerRenderState): void => {
   if (state.nodes.size === 0) return;
+  const now = performance.now();
   const alpha = Math.min(
     1,
-    Math.max(0, (performance.now() - state.receivedAt) / SNAPSHOT_INTERVAL_MS),
+    Math.max(0, (now - state.receivedAt) / SNAPSHOT_INTERVAL_MS),
   );
+  const tSec = now / 1000;
   // Selection ring pulse — 1.2 Hz sine.
-  const t = performance.now() / 1000;
-  const pulse = 0.55 + 0.45 * Math.sin(t * Math.PI * 2 * 1.2);
+  const selPulse = 0.55 + 0.45 * Math.sin(tSec * Math.PI * 2 * 1.2);
 
   for (const [id, nodes] of state.nodes) {
     if (nodes.container.destroyed) continue;
     const curr = state.curr.get(id);
     if (!curr) continue;
     const prev = state.prev.get(id) ?? curr;
-    const x = prev.x + (curr.x - prev.x) * alpha;
-    const y = prev.y + (curr.y - prev.y) * alpha;
-    nodes.container.position.set(x, y);
+    const baseX = prev.x + (curr.x - prev.x) * alpha;
+    const baseY = prev.y + (curr.y - prev.y) * alpha;
 
-    if (nodes.selection.visible) {
-      nodes.selection.alpha = pulse;
+    // ---- Velocity estimate (smoothed) for walk-bob amplitude --------
+    const dxSnap = curr.x - prev.x;
+    const dySnap = curr.y - prev.y;
+    const distPerSnap = Math.hypot(dxSnap, dySnap);
+    // distPerSnap is distance over SNAPSHOT_INTERVAL_MS (~100ms).
+    // Smooth with a low-pass filter so brief pauses don't kill the bob.
+    const targetSpeed = distPerSnap;
+    nodes.speed += (targetSpeed - nodes.speed) * 0.15;
+
+    nodes.container.position.set(baseX, baseY);
+
+    // ---- Walk-bob (only when alive AND moving) ---------------------
+    if (curr.alive && nodes.speed > 0.04) {
+      nodes.bobPhase += (1 / 60) * 2 * Math.PI * 4; // ~4 Hz at 60fps
+      // Sinus offset; amplitude scales gently with speed up to 0.3 tile.
+      const amp = Math.min(0.3, nodes.speed * 1.2);
+      const bob = -Math.abs(Math.sin(nodes.bobPhase)) * amp;
+      nodes.bobLayer.position.set(0, bob);
+    } else {
+      nodes.bobLayer.position.set(0, 0);
     }
 
-    // Smooth hp bar lerp toward the snapshot target (0..1 in ~250 ms).
+    // ---- Death fade -------------------------------------------------
+    if (nodes.deathFadeStart > 0) {
+      const dt = now - nodes.deathFadeStart;
+      if (dt < DEATH_FADE_MS) {
+        const k = dt / DEATH_FADE_MS;
+        // Body alpha 1 → 0.25; name dims 1 → 0.5; weapon hides early.
+        nodes.bobLayer.alpha = 1 - 0.75 * k;
+        nodes.nameText.alpha = 1 - 0.5 * k;
+        nodes.weaponLayer.visible = false;
+        nodes.selection.visible = false;
+      } else {
+        nodes.bobLayer.alpha = 0.25;
+        nodes.nameText.alpha = 0.5;
+        nodes.deathFadeStart = 0;
+      }
+    } else if (curr.alive) {
+      // Reset alpha after a respawn.
+      nodes.bobLayer.alpha = 1;
+    }
+
+    // ---- Spawn pulse -----------------------------------------------
+    if (nodes.spawnPulseStart > 0) {
+      const dt = now - nodes.spawnPulseStart;
+      if (dt < SPAWN_PULSE_MS) {
+        const k = dt / SPAWN_PULSE_MS;
+        // Scale body from 0.3 → 1.0 with easeOutBack.
+        const eased = easeOutBack(k);
+        const scale = 0.3 + 0.7 * Math.min(1, Math.max(0, eased));
+        nodes.bobLayer.scale.set(scale);
+        // Outward white ring fade.
+        const ringR = 1.2 + k * 1.6;
+        const ringA = (1 - k) * 0.8;
+        nodes.spawnPulse.clear();
+        nodes.spawnPulse
+          .circle(0, 0, ringR)
+          .stroke({ color: 0xffffff, width: 0.18, alpha: ringA });
+        nodes.spawnPulse.visible = true;
+      } else {
+        nodes.bobLayer.scale.set(1);
+        nodes.spawnPulse.visible = false;
+        nodes.spawnPulseStart = 0;
+      }
+    }
+
+    // ---- Hit flash (red body tint) ---------------------------------
+    if (nodes.hitFlashStart > 0) {
+      const dt = now - nodes.hitFlashStart;
+      if (dt < HIT_FLASH_MS) {
+        const k = 1 - dt / HIT_FLASH_MS;
+        // Tint via colour matrix; cheaper than redrawing the graphic.
+        nodes.body.tint = 0xff8888;
+        nodes.body.alpha = 0.85 + 0.15 * k;
+      } else {
+        nodes.body.tint = 0xffffff;
+        nodes.body.alpha = 1;
+        nodes.hitFlashStart = 0;
+      }
+    }
+
+    // ---- Damage number float ---------------------------------------
+    if (nodes.damageFloatStart > 0) {
+      const dt = now - nodes.damageFloatStart;
+      if (dt < DAMAGE_FLOAT_MS) {
+        const k = dt / DAMAGE_FLOAT_MS;
+        nodes.damageText.visible = true;
+        // Floats up from -1.6 to -3.4 over the lifetime.
+        nodes.damageText.position.set(0, -1.6 - k * 1.8);
+        nodes.damageText.alpha = 1 - k * k; // ease-out fade
+      } else {
+        nodes.damageText.visible = false;
+        nodes.damageFloatStart = 0;
+      }
+    }
+
+    // ---- Muzzle flash ----------------------------------------------
+    if (nodes.muzzleFlashStart > 0 && nodes.weaponKind) {
+      const dt = now - nodes.muzzleFlashStart;
+      if (dt < MUZZLE_FLASH_MS) {
+        const k = 1 - dt / MUZZLE_FLASH_MS;
+        const tipX = weaponMuzzleX(nodes.weaponKind);
+        const radius = 0.35 + 0.15 * (1 - k); // grows then fades
+        nodes.muzzleFlash.clear();
+        // Bright yellow-white half-disc.
+        nodes.muzzleFlash
+          .circle(tipX, 0, radius)
+          .fill({ color: 0xfff6c0, alpha: k * 0.95 });
+        // Inner hot core.
+        nodes.muzzleFlash
+          .circle(tipX, 0, radius * 0.5)
+          .fill({ color: 0xffffff, alpha: k * 0.9 });
+        // Forward spike (small triangle).
+        nodes.muzzleFlash
+          .poly([
+            tipX + radius * 1.4, 0,
+            tipX + radius * 0.3, radius * 0.6,
+            tipX + radius * 0.3, -radius * 0.6,
+          ])
+          .fill({ color: 0xffe27a, alpha: k * 0.85 });
+        nodes.muzzleFlash.visible = true;
+      } else {
+        nodes.muzzleFlash.visible = false;
+        nodes.muzzleFlashStart = 0;
+      }
+    }
+
+    // ---- Comm pulse ------------------------------------------------
+    if (nodes.commPulseStart > 0) {
+      const dt = now - nodes.commPulseStart;
+      if (dt < COMM_PULSE_MS) {
+        const k = dt / COMM_PULSE_MS;
+        const radius = 1.2 + k * 1.0; // 12px → 22px feel
+        const alphaR = (1 - k) * 0.8;
+        nodes.commPulse.clear();
+        nodes.commPulse
+          .circle(0, 0, radius)
+          .stroke({ color: nodes.commPulseColor, width: 0.18, alpha: alphaR });
+        nodes.commPulse.visible = true;
+      } else {
+        nodes.commPulse.visible = false;
+        nodes.commPulseStart = 0;
+      }
+    }
+
+    // ---- Plant / defuse progress ring ------------------------------
+    const act = state.actState.get(id);
+    if (act && curr.alive && (act.planting || act.defusing) && state.bomb) {
+      const total = act.planting ? 4.0 : 7.0; // engine defaults; ring is purely visual
+      const elapsed = state.bomb.timer;
+      const frac = Math.max(0, Math.min(1, elapsed / total));
+      const ringColor = act.planting ? 0xff8c42 : 0x4d9eff;
+      drawProgressRing(nodes.progressRing, frac, ringColor);
+      nodes.progressRing.visible = true;
+    } else if (nodes.progressRing.visible) {
+      nodes.progressRing.clear();
+      nodes.progressRing.visible = false;
+    }
+
+    // ---- Selection ring pulse --------------------------------------
+    if (nodes.selection.visible) {
+      nodes.selection.alpha = selPulse;
+    }
+
+    // ---- Smooth hp bar lerp -----------------------------------------
     const target = state.hpTargets.get(id) ?? 0;
     const cur = nodes.displayedHpFrac;
     const blend = Math.min(1, 16 / 1000 * 6); // ~6 units per second
@@ -785,6 +1413,27 @@ const tickPlayerPositions = (state: PlayerRenderState): void => {
       nodes.displayedHpFrac = next;
       drawHpBar(nodes, next, curr.alive);
     }
+  }
+};
+
+/**
+ * Draw a 360° progress ring around the body. `frac` in [0,1]. The ring
+ * starts at the top (12 o'clock) and fills clockwise.
+ */
+const drawProgressRing = (g: Graphics, frac: number, color: number): void => {
+  g.clear();
+  const r = 1.6;
+  const startAngle = -Math.PI / 2;
+  const endAngle = startAngle + Math.max(0, Math.min(1, frac)) * Math.PI * 2;
+  // Dim base ring (unfilled portion).
+  g.circle(0, 0, r).stroke({ color: 0x0a0e14, width: 0.32, alpha: 0.7 });
+  // Filled arc.
+  if (frac > 0.005) {
+    g.arc(0, 0, r, startAngle, endAngle, false).stroke({
+      color,
+      width: 0.34,
+      alpha: 0.95,
+    });
   }
 };
 
@@ -1049,8 +1698,12 @@ const MapViewer = () => {
         prev: new Map(),
         curr: new Map(),
         hpTargets: new Map(),
+        actState: new Map(),
         receivedAt: performance.now(),
         round: -1,
+        bomb: null,
+        lastEventId: null,
+        lastMessageId: null,
       };
       const bombState: { nodes: BombRenderNodes | null } = { nodes: null };
 
@@ -1069,6 +1722,9 @@ const MapViewer = () => {
             state.agents,
             state.selectedAgentId,
             state.round,
+            state.bomb,
+            state.eventFeed,
+            state.recentMessages,
             selectAgent,
           );
           updateBombOnMap(bombState, bombLayer, state.bomb);
