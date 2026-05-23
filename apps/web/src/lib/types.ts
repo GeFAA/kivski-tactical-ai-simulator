@@ -279,6 +279,14 @@ export interface RoundResult {
 
 // ---------- WebSocket frame envelope ----------
 
+/** Initial frame sent by the backend on WebSocket connect with map metadata. */
+export interface MapInfoFrame {
+  /** Map identifier (e.g. "dustline"). */
+  mapName: string;
+  /** Optional engine tick rate in Hz if the backend reports it. */
+  tickRate?: number;
+}
+
 export type WSFrame =
   | { type: "snapshot"; data: MatchSnapshot }
   | { type: "event"; data: EventItem }
@@ -288,7 +296,19 @@ export type WSFrame =
   | { type: "training_status"; data: TrainingStatus }
   | { type: "metrics_sample"; data: MetricsSample }
   | { type: "round_result"; data: RoundResult }
+  /**
+   * Legacy "hello" frame (kept for backwards compatibility). Real backend
+   * sends `map_info` — see :type:`MapInfoFrame`.
+   */
   | { type: "hello"; data: { mapName: string; tickRate: number } }
+  /** Sent once by the backend on WS connect; carries map metadata. */
+  | { type: "map_info"; data: MapInfoFrame }
+  /** Sent when the engine reports match complete. */
+  | { type: "match_done"; matchId?: string }
+  /** Response to a client `ping`. */
+  | { type: "pong"; ts: number }
+  /** Generic acknowledgement of a control command. */
+  | { type: "ack"; for: string; [k: string]: unknown }
   | { type: "error"; data: { message: string } };
 
 // ---------- Map data ----------

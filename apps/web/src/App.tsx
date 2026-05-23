@@ -32,6 +32,9 @@ const App = () => {
           case "hello":
             setMapName(frame.data.mapName);
             break;
+          case "map_info":
+            setMapName(frame.data.mapName);
+            break;
           case "snapshot":
             setMatchSnapshot(frame.data);
             break;
@@ -56,8 +59,19 @@ const App = () => {
           case "round_result":
             pushRoundResult(frame.data);
             break;
+          case "match_done":
+            // Engine signals the match is finished; the store keeps the
+            // last snapshot, the api-client auto-reconnects with a new
+            // match on the next loop iteration.
+
+            console.warn("[kivski] match_done:", frame.matchId ?? "(unknown id)");
+            break;
+          case "pong":
+          case "ack":
+            // Control acks aren't user-visible; nothing to do.
+            break;
           case "error":
-             
+
             console.warn("[kivski] server error frame:", frame.data.message);
             break;
         }
