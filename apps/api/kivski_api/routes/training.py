@@ -43,6 +43,35 @@ def _log_dir() -> Path:
     return p
 
 
+def _configs_dir() -> Path:
+    """Resolve the repo-root ``configs/`` directory."""
+    return _repo_root() / "configs"
+
+
+@router.get("/configs")
+async def list_training_configs() -> list[dict[str, Any]]:
+    """List available trainer-config YAML files under ``configs/``.
+
+    Each entry is ``{id, name, description}`` so the frontend dropdown
+    can show a friendly label and use ``id`` as the relative path
+    passed to ``/api/training/start``.
+    """
+    root = _configs_dir()
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.yaml")):
+        rel = path.relative_to(_repo_root()).as_posix()
+        out.append(
+            {
+                "id": rel,
+                "name": path.stem,
+                "description": f"{path.stat().st_size} bytes",
+            },
+        )
+    return out
+
+
 class StartTrainingBody(BaseModel):
     config: str | None = Field(default=None, description="Path to config YAML")
     episodes: int | None = Field(default=None, ge=1, description="Override total episodes")

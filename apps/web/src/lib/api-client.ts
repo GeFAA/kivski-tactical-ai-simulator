@@ -159,17 +159,37 @@ export type Command =
   | { type: "reset_match" }
   | { type: "start_training"; configId?: string }
   | { type: "stop_training" }
-  | { type: "run_episodes"; n: number }
+  | { type: "run_episodes"; n: number; configId?: string }
   | { type: "save_checkpoint"; name?: string }
   | { type: "load_checkpoint"; id: string };
 
-export async function postCommand(cmd: Command): Promise<{ ok: true } | { ok: false; error: string }> {
+/**
+ * Module-level reference to the currently-active match id, set by
+ * `subscribeMatch` after the create-match handshake. Match-scoped
+ * commands (pause/resume/speed/reset) read this so they don't need
+ * the caller to thread the id through every layer.
+ *
+ * Kept in sync with the store's `currentMatchId` field — both are
+ * authoritative, but the module-level ref avoids a circular import
+ * here (`store` imports types from this file).
+ */
+let _currentMatchId: string | null = null;
+
+/** External setter used by `subscribeMatch` (or tests) to override the id. */
+export function setCurrentMatchId(id: string | null): void {
+  _currentMatchId = id;
+}
+
+export function getCurrentMatchId(): string | null {
+  return _currentMatchId;
+}
+
+type CommandResult = { ok: true } | { ok: false; error: string };
+
+/** Common error wrapper around `fetch` so each branch in `postCommand` is one line. */
+async function postOrError(url: string, init?: RequestInit): Promise<CommandResult> {
   try {
-    const res = await fetch(`${API_BASE}/command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cmd),
-    });
+    const res = await fetch(url, init);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       return { ok: false, error: `${res.status} ${res.statusText}: ${body.slice(0, 200)}` };
@@ -177,6 +197,108 @@ export async function postCommand(cmd: Command): Promise<{ ok: true } | { ok: fa
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Dispatch a UI-level command to the correct backend endpoint.
+ *
+ * The backend deliberately exposes one endpoint per action (each with
+ * its own validation + schema) rather than a single `/api/command`
+ * collector — so this function fans the typed union out to:
+ *
+ *   pause/resume/speed/reset → /api/match/{currentMatchId}/...
+ *   start_training/stop      → /api/training/start | /stop
+ *   run_episodes             → /api/training/start with `episodes`
+ *   save_checkpoint          → no-op in V1 (trainer auto-saves)
+ *   load_checkpoint          → /api/checkpoints/{name}/load
+ */
+export async function postCommand(cmd: Command): Promise<CommandResult> {
+  const matchId = _currentMatchId;
+  const needsMatch = (): CommandResult =>
+    matchId === null
+      ? { ok: false, error: "no active match; reload the page" }
+      : { ok: true };
+
+  switch (cmd.type) {
+    case "pause": {
+      const guard = needsMatch();
+      if (!guard.ok) return guard;
+      return postOrError(`${API_BASE}/match/${encodeURIComponent(matchId!)}/pause`, {
+        method: "POST",
+      });
+    }
+    case "resume": {
+      const guard = needsMatch();
+      if (!guard.ok) return guard;
+      return postOrError(`${API_BASE}/match/${encodeURIComponent(matchId!)}/resume`, {
+        method: "POST",
+      });
+    }
+    case "set_speed": {
+      const guard = needsMatch();
+      if (!guard.ok) return guard;
+      const url =
+        `${API_BASE}/match/${encodeURIComponent(matchId!)}/speed` +
+        `?multiplier=${encodeURIComponent(String(cmd.speed))}`;
+      return postOrError(url, { method: "POST" });
+    }
+    case "reset_match": {
+      const guard = needsMatch();
+      if (!guard.ok) return guard;
+      return postOrError(`${API_BASE}/match/${encodeURIComponent(matchId!)}/reset`, {
+        method: "POST",
+      });
+    }
+    case "start_training": {
+      const body = {
+        config: cmd.configId || "configs/default.yaml",
+        episodes: null,
+        checkpoint: null,
+      };
+      return postOrError(`${API_BASE}/training/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+    case "stop_training": {
+      return postOrError(`${API_BASE}/training/stop`, { method: "POST" });
+    }
+    case "run_episodes": {
+      const body = {
+        config: cmd.configId || "configs/default.yaml",
+        episodes: Math.max(1, Math.floor(cmd.n)),
+        checkpoint: null,
+      };
+      return postOrError(`${API_BASE}/training/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    }
+    case "save_checkpoint": {
+      // V1: the trainer subprocess writes checkpoints periodically
+      // (controlled by configs/default.yaml `checkpoint_interval`).
+      // There is no on-demand save endpoint -- surface that as a
+      // "soft success" so the button gives feedback rather than 404.
+      return { ok: true };
+    }
+    case "load_checkpoint": {
+      const id = cmd.id.trim();
+      if (id === "") return { ok: false, error: "no checkpoint selected" };
+      return postOrError(`${API_BASE}/checkpoints/${encodeURIComponent(id)}/load`, {
+        method: "POST",
+      });
+    }
+    default: {
+      // Exhaustiveness check -- a new Command variant will surface here as a TS error.
+      const _exhaustive: never = cmd;
+      return {
+        ok: false,
+        error: `unknown command: ${(_exhaustive as { type: string }).type}`,
+      };
+    }
   }
 }
 
@@ -233,6 +355,13 @@ export interface SubscribeOpts {
   createBody?: CreateMatchBody;
   onFrame: (frame: WSFrame) => void;
   onStatus?: (status: "connecting" | "open" | "closed" | "error") => void;
+  /**
+   * Notified whenever the backend match id changes (initial connect,
+   * session-lost reconnect, or final close → null). The frontend uses
+   * this to mirror the id into the global store so REST commands can
+   * target /api/match/{id}/...
+   */
+  onMatchId?: (id: string | null) => void;
   /** Initial reconnect delay in ms. Doubles per attempt up to 15s cap. */
   baseDelayMs?: number;
 }
@@ -361,6 +490,11 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
       if (res.map) mapName = res.map;
       needsFreshMatch = false;
 
+      // Make the new id discoverable by `postCommand` (module-level ref)
+      // and the React store (via the consumer-provided callback).
+      setCurrentMatchId(matchId);
+      opts.onMatchId?.(matchId);
+
       console.warn("[kivski] created match", matchId, "on", mapName);
       return matchId;
     } catch (err) {
@@ -476,6 +610,10 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
         }
         ws = null;
       }
+      // Clear the id so any post-close postCommand fails fast with
+      // "no active match" instead of POST-ing to a stale URL.
+      setCurrentMatchId(null);
+      opts.onMatchId?.(null);
     },
   };
 }

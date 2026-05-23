@@ -166,8 +166,9 @@ const BottomControls = () => {
           <button
             type="button"
             className="btn"
-            onClick={() => send("save checkpoint", { type: "save_checkpoint" })}
+            onClick={() => send("save checkpoint (auto)", { type: "save_checkpoint" })}
             disabled={busy !== null}
+            title="Trainer auto-saves periodically (see configs/default.yaml checkpoint_interval)"
           >
             Save Ckpt
           </button>

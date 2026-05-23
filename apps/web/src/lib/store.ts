@@ -34,9 +34,16 @@ interface MatchState {
   mapName: string;
   /** True when WebSocket has at least one frame and is alive. */
   connected: boolean;
+  /**
+   * Backend match id of the currently subscribed session, or null while
+   * the WS handshake hasn't completed yet. REST control commands
+   * (pause/resume/speed/reset) target `/api/match/{currentMatchId}/...`,
+   * so they must short-circuit until this is set.
+   */
+  currentMatchId: string | null;
 }
 
-export type RightTab = "events" | "inspector" | "comms" | "metrics";
+export type RightTab = "events" | "inspector" | "comms" | "metrics" | "sys";
 
 interface UIState {
   selectedAgentId: string | null;
@@ -80,6 +87,7 @@ interface MetricsState {
 interface Actions {
   // Networking-driven
   setConnected: (v: boolean) => void;
+  setCurrentMatchId: (id: string | null) => void;
   setMatchSnapshot: (snap: MatchSnapshot) => void;
   pushEvent: (e: EventItem) => void;
   pushMessage: (m: MessageItem) => void;
@@ -124,6 +132,7 @@ const initialMatch: MatchState = {
   bomb: { pos: null, phase: "none", timer: 0, carrierId: null, siteId: null },
   mapName: "dustline",
   connected: false,
+  currentMatchId: null,
 };
 
 const initialUI: UIState = {
@@ -198,6 +207,8 @@ export const useStore = create<AppState>((set) => ({
   ...initialMetrics,
 
   setConnected: (v) => set({ connected: v }),
+
+  setCurrentMatchId: (id) => set({ currentMatchId: id }),
 
   setMatchSnapshot: (snap) =>
     set((s) => {

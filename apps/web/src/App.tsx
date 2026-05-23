@@ -12,6 +12,7 @@ import { useStore } from "@/lib/store";
 
 const App = () => {
   const setConnected = useStore((s) => s.setConnected);
+  const setCurrentMatchId = useStore((s) => s.setCurrentMatchId);
   const setMatchSnapshot = useStore((s) => s.setMatchSnapshot);
   const pushEvent = useStore((s) => s.pushEvent);
   const pushMessage = useStore((s) => s.pushMessage);
@@ -27,6 +28,7 @@ const App = () => {
   useEffect(() => {
     const handle = subscribeMatch({
       onStatus: (status) => setConnected(status === "open"),
+      onMatchId: (id) => setCurrentMatchId(id),
       onFrame: (frame) => {
         switch (frame.type) {
           case "hello":
@@ -80,6 +82,7 @@ const App = () => {
     return () => handle.close();
   }, [
     setConnected,
+    setCurrentMatchId,
     setMatchSnapshot,
     pushEvent,
     pushMessage,
