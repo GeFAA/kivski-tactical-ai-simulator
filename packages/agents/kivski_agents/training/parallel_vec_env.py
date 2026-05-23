@@ -447,7 +447,7 @@ def _subproc_worker_loop(
         KivskiParallelEnv(config=cfg, map_name=map_name, seed=int(s), map_data=map_data) for s in seeds
     ]
     # First reset to prime each env so subsequent ``step`` calls don't blow up.
-    for env, seed in zip(envs, seeds):
+    for env, seed in zip(envs, seeds, strict=False):
         env.reset(seed=int(seed))
 
     try:
@@ -459,7 +459,7 @@ def _subproc_worker_loop(
             if cmd == "reset":
                 # payload: list[int] seeds (one per env)
                 replies: list[tuple[dict[str, np.ndarray], dict[str, dict[str, Any]]]] = []
-                for env, s in zip(envs, payload):
+                for env, s in zip(envs, payload, strict=False):
                     obs, info = env.reset(seed=int(s))
                     replies.append((obs, info))
                 remote.send(("reset_ok", replies))
@@ -474,7 +474,7 @@ def _subproc_worker_loop(
                         dict[str, dict[str, Any]],
                     ]
                 ] = []
-                for env, (env_actions, env_payloads) in zip(envs, payload):
+                for env, (env_actions, env_payloads) in zip(envs, payload, strict=False):
                     if env_payloads:
                         out = env.step_with_comms(env_actions, comm_payloads=env_payloads)
                     else:
@@ -687,7 +687,7 @@ class SubprocVecEnv:
             kind, payload = remote.recv()
             if kind != "reset_ok":
                 raise RuntimeError(f"worker reset failed: kind={kind!r} payload={payload!r}")
-            for (obs, info), env_i in zip(payload, per_worker_env_indices[w_idx]):
+            for (obs, info), env_i in zip(payload, per_worker_env_indices[w_idx], strict=False):
                 for name, vec in obs.items():
                     obs_batch[name][env_i] = np.asarray(vec, dtype=np.float32)
                 self._acc[env_i].reset(episode=int(self._episode_counter[env_i]))
@@ -720,9 +720,9 @@ class SubprocVecEnv:
 
         # Pre-slice per-env actions/payloads in the parent so the workers
         # don't have to deal with the full batched dict over the wire.
-        per_worker_payloads: list[
-            list[tuple[dict[str, np.ndarray], dict[str, np.ndarray] | None]]
-        ] = [[] for _ in range(self.num_workers)]
+        per_worker_payloads: list[list[tuple[dict[str, np.ndarray], dict[str, np.ndarray] | None]]] = [
+            [] for _ in range(self.num_workers)
+        ]
         per_worker_env_indices: list[list[int]] = [[] for _ in range(self.num_workers)]
         for env_i in range(self.num_envs):
             w_idx, _local = self._env_to_worker[env_i]
@@ -754,7 +754,7 @@ class SubprocVecEnv:
             if kind != "step_ok":
                 raise RuntimeError(f"worker step failed: kind={kind!r} payload={payload!r}")
             for (obs, rewards, terms, truncs, env_info), env_i in zip(
-                payload, per_worker_env_indices[w_idx]
+                payload, per_worker_env_indices[w_idx], strict=False
             ):
                 # Tally per-team rewards using the team partition from the
                 # anchor env (teams are stable per env-index because every
@@ -879,10 +879,8 @@ class SubprocVecEnv:
             with contextlib.suppress(Exception):
                 remote.close()
         for proc in self._processes:
-            try:
+            with contextlib.suppress(Exception):
                 proc.join(timeout=3.0)
-            except Exception:
-                pass
             if proc.is_alive():
                 with contextlib.suppress(Exception):
                     proc.terminate()
@@ -915,9 +913,7 @@ class SubprocVecEnv:
             & 0x7FFF_FFFF
         )
 
-    def _build_episode_stats_from_summary(
-        self, summary: dict[str, Any], env_idx: int
-    ) -> EpisodeStats:
+    def _build_episode_stats_from_summary(self, summary: dict[str, Any], env_idx: int) -> EpisodeStats:
         outcome = int(summary.get("match_outcome", 0))
         if outcome == int(MatchOutcome.YELLOW_WIN):
             winner = "yellow"
@@ -944,18 +940,10 @@ class SubprocVecEnv:
             )
         bombs_planted = int(sum(1 for s in round_summaries if bool(s.get("bomb_planted", False))))
         bombs_defused = int(
-            sum(
-                1
-                for s in round_summaries
-                if int(s.get("outcome", 0)) == int(RoundOutcome.BOMB_DEFUSED)
-            )
+            sum(1 for s in round_summaries if int(s.get("outcome", 0)) == int(RoundOutcome.BOMB_DEFUSED))
         )
         bombs_detonated = int(
-            sum(
-                1
-                for s in round_summaries
-                if int(s.get("outcome", 0)) == int(RoundOutcome.BOMB_DETONATED)
-            )
+            sum(1 for s in round_summaries if int(s.get("outcome", 0)) == int(RoundOutcome.BOMB_DETONATED))
         )
         acc = self._acc[env_idx]
         return EpisodeStats(
@@ -1051,9 +1039,7 @@ def make_vec_env(
                 num_workers=num_workers,
             )
         except Exception as exc:  # noqa: BLE001 - fallback path
-            _LOG.warning(
-                "SubprocVecEnv failed to start (%s); falling back to SyncVecEnv", exc
-            )
+            _LOG.warning("SubprocVecEnv failed to start (%s); falling back to SyncVecEnv", exc)
             return VecEnvWrapper(
                 num_envs=num_envs,
                 cfg=cfg,

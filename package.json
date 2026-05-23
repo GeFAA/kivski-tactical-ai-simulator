@@ -1,6 +1,6 @@
 {
   "name": "kivski-tactical-ai-simulator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Kivski Tactical AI Simulator monorepo root.",
   "license": "MIT",
