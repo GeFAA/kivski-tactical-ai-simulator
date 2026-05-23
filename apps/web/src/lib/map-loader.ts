@@ -1,9 +1,25 @@
 /**
- * Map loading: try the backend first, fall back to a built-in
- * placeholder so the viewer always has something to render.
+ * Map loading: try the backend first, normalise the wire schema to
+ * the viewer's `MapData` shape, and fall back to a built-in placeholder
+ * so the viewer always has something to render.
+ *
+ * Backend schema (see packages/sim/maps/loader.py) uses:
+ *   { name, width, height, walls: [{polygon:[[x,y]...], blocks_*}],
+ *     cover: [{polygon:[[x,y]...], blocks_*, low}],
+ *     spawns: { attacker:[[x,y]...], defender:[[x,y]...] },
+ *     bombsites: { A:{center,polygon}, B:{center,polygon} },
+ *     named_areas: [{name, polygon}] }
+ *
+ * Viewer schema (`MapData`) uses:
+ *   { name, width, height, pxPerUnit,
+ *     walls: [{ kind:"wall"|"cover", poly: [{x,y}, ...] }],
+ *     zones: [{ id, kind, label, poly: [{x,y}, ...] }] }
+ *
+ * `normaliseBackendMap` does the translation so the viewer renders the
+ * real map shipped by the backend.
  */
 
-import type { MapData } from "./types";
+import type { MapData, MapWall, MapZone, Vec2 } from "./types";
 
 const MAP_API = "/api/maps";
 
@@ -130,10 +146,174 @@ export const DUSTLINE_FALLBACK: MapData = {
   ],
 };
 
+// ---------- Backend → viewer schema normalisation ----------
+
+type PolyTuple = [number, number];
+
+interface BackendWall {
+  polygon?: PolyTuple[];
+  poly?: { x: number; y: number }[];
+}
+
+interface BackendBombsite {
+  center?: PolyTuple;
+  polygon?: PolyTuple[];
+}
+
+interface BackendNamedArea {
+  name?: string;
+  polygon?: PolyTuple[];
+}
+
+interface BackendMap {
+  name?: string;
+  width?: number;
+  height?: number;
+  tile_size?: number;
+  walls?: BackendWall[];
+  cover?: BackendWall[];
+  bombsites?: { A?: BackendBombsite; B?: BackendBombsite };
+  spawns?: { attacker?: PolyTuple[]; defender?: PolyTuple[] };
+  named_areas?: BackendNamedArea[];
+
+  // Already-in-viewer-schema fields (some test maps may send these directly)
+  walls_viewer?: MapWall[];
+  zones?: MapZone[];
+  pxPerUnit?: number;
+}
+
+const tupleToVec = (t: PolyTuple): Vec2 => ({ x: t[0], y: t[1] });
+
+const polygonToPoly = (poly: PolyTuple[] | undefined): Vec2[] =>
+  Array.isArray(poly) ? poly.map(tupleToVec) : [];
+
+/** Build a small AABB polygon centred on `(x, y)` for spawn markers. */
+const spawnPad = (
+  cx: number,
+  cy: number,
+  half: number,
+): Vec2[] => [
+  { x: cx - half, y: cy - half },
+  { x: cx + half, y: cy - half },
+  { x: cx + half, y: cy + half },
+  { x: cx - half, y: cy + half },
+];
+
+/**
+ * Convert the backend's map JSON to the viewer's `MapData`. The wire
+ * schema is more verbose (separate walls/cover/spawns/bombsites/named_areas)
+ * — the viewer just wants two flat arrays: `walls` + `zones`.
+ */
+export const normaliseBackendMap = (raw: BackendMap): MapData | null => {
+  if (
+    typeof raw?.width !== "number" ||
+    typeof raw?.height !== "number"
+  ) {
+    return null;
+  }
+
+  // If the payload already matches the viewer schema (zones present and walls
+  // already have {poly}), trust it as-is.
+  if (
+    Array.isArray(raw.zones) &&
+    Array.isArray(raw.walls) &&
+    raw.walls.every((w) => Array.isArray(w.poly))
+  ) {
+    return {
+      name: raw.name ?? "unknown",
+      width: raw.width,
+      height: raw.height,
+      pxPerUnit: typeof raw.pxPerUnit === "number" ? raw.pxPerUnit : 12,
+      walls: raw.walls as unknown as MapWall[],
+      zones: raw.zones,
+    };
+  }
+
+  // ---- Backend native shape: translate ----
+  const walls: MapWall[] = [];
+  for (const w of raw.walls ?? []) {
+    const poly = polygonToPoly(w.polygon);
+    if (poly.length >= 3) walls.push({ kind: "wall", poly });
+  }
+  for (const c of raw.cover ?? []) {
+    const poly = polygonToPoly(c.polygon);
+    if (poly.length >= 3) walls.push({ kind: "cover", poly });
+  }
+
+  const zones: MapZone[] = [];
+
+  // Bombsites
+  if (raw.bombsites?.A?.polygon) {
+    zones.push({
+      id: "siteA",
+      kind: "site_a",
+      label: "A",
+      poly: polygonToPoly(raw.bombsites.A.polygon),
+    });
+  }
+  if (raw.bombsites?.B?.polygon) {
+    zones.push({
+      id: "siteB",
+      kind: "site_b",
+      label: "B",
+      poly: polygonToPoly(raw.bombsites.B.polygon),
+    });
+  }
+
+  // Spawns — render as small pads around each spawn point.
+  const spawnHalf = 0.6;
+  (raw.spawns?.attacker ?? []).forEach((p, i) => {
+    zones.push({
+      id: `spawn_attacker_${i}`,
+      kind: "spawn_attacker",
+      label: i === 0 ? "Yellow" : undefined,
+      poly: spawnPad(p[0], p[1], spawnHalf),
+    });
+  });
+  (raw.spawns?.defender ?? []).forEach((p, i) => {
+    zones.push({
+      id: `spawn_defender_${i}`,
+      kind: "spawn_defender",
+      label: i === 0 ? "Blue" : undefined,
+      poly: spawnPad(p[0], p[1], spawnHalf),
+    });
+  });
+
+  // Named areas — render as neutral zones with their name as label.
+  for (const a of raw.named_areas ?? []) {
+    if (!a.name || !a.polygon) continue;
+    // Skip the ones we already emitted via bombsites/spawns.
+    const lower = a.name.toLowerCase();
+    if (
+      lower === "bombsitea" ||
+      lower === "bombsiteb" ||
+      lower === "yellowspawn" ||
+      lower === "bluespawn"
+    ) {
+      continue;
+    }
+    zones.push({
+      id: `area_${a.name}`,
+      kind: "neutral",
+      label: a.name,
+      poly: polygonToPoly(a.polygon),
+    });
+  }
+
+  return {
+    name: raw.name ?? "unknown",
+    width: raw.width,
+    height: raw.height,
+    pxPerUnit: typeof raw.tile_size === "number" ? 12 / raw.tile_size : 12,
+    walls,
+    zones,
+  };
+};
+
 /**
  * Load a named map. Tries `/api/maps/<name>` first; if the request
- * fails or the server is offline, returns the built-in fallback (only
- * for 'dustline' — other names throw so the caller knows).
+ * fails, returns malformed data, or normalisation can't produce a
+ * usable shape, returns the built-in fallback.
  */
 export async function loadMap(name: string): Promise<MapData> {
   try {
@@ -141,21 +321,24 @@ export async function loadMap(name: string): Promise<MapData> {
       headers: { Accept: "application/json" },
     });
     if (res.ok) {
-      const data = (await res.json()) as MapData;
-      // Trust-but-verify a couple of required fields.
-      if (
-        typeof data?.width === "number" &&
-        typeof data?.height === "number" &&
-        Array.isArray(data?.walls) &&
-        Array.isArray(data?.zones)
-      ) {
-        return data;
+      const raw = (await res.json()) as BackendMap;
+      const normalised = normaliseBackendMap(raw);
+      if (normalised && normalised.walls.length > 0) {
+        return normalised;
       }
-       
-      console.warn(`[kivski] /api/maps/${name} returned malformed data — using fallback.`);
+
+      console.warn(
+        `[kivski] /api/maps/${name} returned data that could not be normalised — using fallback.`,
+        { rawKeys: Object.keys(raw ?? {}) },
+      );
+    } else {
+
+      console.warn(
+        `[kivski] /api/maps/${name} HTTP ${res.status} — using fallback.`,
+      );
     }
   } catch (err) {
-     
+
     console.warn(`[kivski] /api/maps/${name} fetch failed — using fallback.`, err);
   }
 

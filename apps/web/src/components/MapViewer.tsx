@@ -249,6 +249,8 @@ const MapViewer = () => {
 
   /** Forces a re-render once the async pixi init finishes — so PixiContext.Provider sees app+world. */
   const [pixiReady, setPixiReady] = useState(false);
+  /** Non-fatal user-visible message when something pixi-side went wrong. */
+  const [pixiError, setPixiError] = useState<string | null>(null);
 
   // Init PixiJS app once per host element.
   useEffect(() => {
@@ -260,15 +262,30 @@ const MapViewer = () => {
     appRef.current = app;
 
     (async () => {
-      await app.init({
-        background: 0x0a0e14,
-        antialias: true,
-        resolution: Math.min(window.devicePixelRatio || 1, 2),
-        autoDensity: true,
-        resizeTo: host,
-      });
+      try {
+        await app.init({
+          background: 0x0a0e14,
+          antialias: true,
+          resolution: Math.min(window.devicePixelRatio || 1, 2),
+          autoDensity: true,
+          resizeTo: host,
+        });
+      } catch (err) {
+
+        console.error("[kivski] PIXI app.init failed:", err);
+        if (!disposed) {
+          setPixiError(
+            `PIXI init failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
       if (disposed) {
-        app.destroy(true, { children: true, texture: true });
+        try {
+          app.destroy(true, { children: true, texture: true });
+        } catch {
+          /* may throw if init never finished cleanly */
+        }
         return;
       }
       host.appendChild(app.canvas);
@@ -294,6 +311,7 @@ const MapViewer = () => {
       const fit = () => {
         const map = mapDataRef.current;
         if (!map) return;
+        if (!app.renderer) return;
         const sx = app.renderer.width / map.width;
         const sy = app.renderer.height / map.height;
         const s = Math.min(sx, sy);
@@ -304,21 +322,53 @@ const MapViewer = () => {
         );
       };
 
-      const map = await loadMap(mapName || "dustline");
+      let map: MapData;
+      try {
+        map = await loadMap(mapName || "dustline");
+      } catch (err) {
+
+        console.error("[kivski] loadMap failed:", err);
+        if (!disposed) {
+          setPixiError(
+            `Map load failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
       if (disposed) return;
       mapDataRef.current = map;
-      drawBackgroundGrid(bgGfx, map.width, map.height, 4);
-      drawMap(zones, walls, spawnLabels, map);
-      fit();
+      try {
+        drawBackgroundGrid(bgGfx, map.width, map.height, 4);
+        drawMap(zones, walls, spawnLabels, map);
+        fit();
+      } catch (err) {
+
+        console.error("[kivski] map draw failed:", err);
+        if (!disposed) {
+          setPixiError(
+            `Map draw failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
 
       const ro = new ResizeObserver(fit);
       ro.observe(host);
       (app as Application & { __ro?: ResizeObserver }).__ro = ro;
 
       // Wire static-layer redraws on every store change. Players + bomb only.
+      // Guard against firing on torn-down containers in case the unsub
+      // ordering ever races with `destroy()`.
       const unsub = useStore.subscribe((state) => {
-        drawPlayers(players, state.agents, state.selectedAgentId, selectAgent);
-        drawBomb(bomb, state.bomb);
+        if (disposed) return;
+        if (players.destroyed || bomb.destroyed) return;
+        try {
+          drawPlayers(players, state.agents, state.selectedAgentId, selectAgent);
+          drawBomb(bomb, state.bomb);
+        } catch (err) {
+
+          console.error("[kivski] subscribe draw failed:", err);
+        }
       });
       (app as Application & { __unsub?: () => void }).__unsub = unsub;
 
@@ -340,11 +390,14 @@ const MapViewer = () => {
         const ro = (a as Application & { __ro?: ResizeObserver }).__ro;
         if (ro) ro.disconnect();
         const u = (a as Application & { __unsub?: () => void }).__unsub;
-        if (u) u();
+        if (u) {
+          try { u(); } catch { /* ignore */ }
+        }
         try {
           a.destroy(true, { children: true, texture: true });
         } catch {
-          /* ignore */
+          /* ignore — common during the StrictMode mount/unmount/mount cycle
+             when destroy() is called before init() completes. */
         }
       }
     };
@@ -404,6 +457,24 @@ const MapViewer = () => {
       ref={hostRef}
       className="relative h-full w-full overflow-hidden bg-kivski-bg"
     >
+      {pixiError && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div
+            className="pointer-events-auto max-w-md rounded border p-4 text-xs"
+            style={{
+              borderColor: "#5a2a2a",
+              background: "rgba(20,10,10,0.85)",
+              color: "#ff9d9d",
+              fontFamily: "ui-monospace, monospace",
+            }}
+          >
+            <div style={{ color: "#FFC833", fontWeight: 700, marginBottom: 6 }}>
+              MapViewer error
+            </div>
+            <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{pixiError}</pre>
+          </div>
+        </div>
+      )}
       {ctx && (
         <PixiContext.Provider value={ctx}>
           <OverlayMount />
