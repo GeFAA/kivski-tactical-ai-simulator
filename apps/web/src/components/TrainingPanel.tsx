@@ -111,10 +111,14 @@ const TrainingPanel = () => {
         getCheckpoints().catch(() => [] as CheckpointInfo[]),
       ]);
       if (!alive) return;
-      setConfigs(cfgs);
-      if (cfgs[0]) setSelectedConfig(cfgs[0].id);
-      setCheckpoints(ckpts);
-      if (ckpts[0]) setSelectedCkpt(ckpts[0].id);
+      // Defense-in-depth: enforce array shape so a wire-protocol regression
+      // (object wrapper, null, error response) cannot crash the .map() below.
+      const safeCfgs = Array.isArray(cfgs) ? cfgs : [];
+      const safeCkpts = Array.isArray(ckpts) ? ckpts : [];
+      setConfigs(safeCfgs);
+      if (safeCfgs[0]) setSelectedConfig(safeCfgs[0].id);
+      setCheckpoints(safeCkpts);
+      if (safeCkpts[0]) setSelectedCkpt(safeCkpts[0].id);
     })();
     return () => {
       alive = false;

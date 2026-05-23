@@ -42,12 +42,54 @@ export interface CheckpointInfo {
   notes?: string | null;
 }
 
+/**
+ * Backend wire shape for /api/checkpoints — list_checkpoints() returns
+ * `{checkpoints: [...], loaded: name|null}` where each entry has
+ * `{name, path, size_bytes, episodes, timestamp, metadata, loaded}`.
+ * We unwrap + translate here so the rest of the app sees plain
+ * `CheckpointInfo[]`.
+ */
+interface RawCheckpointsResponse {
+  checkpoints?: Array<{
+    name?: string;
+    episodes?: number | null;
+    timestamp?: string | number | null;
+    metadata?: Record<string, unknown> | null;
+  }>;
+  loaded?: string | null;
+}
+
 export async function getCheckpoints(): Promise<CheckpointInfo[]> {
-  const res = await fetch(`${API_BASE}/checkpoints`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
-  return jsonOrThrow<CheckpointInfo[]>(res);
+  try {
+    const res = await fetch(`${API_BASE}/checkpoints`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return [];
+    const raw = (await res.json()) as RawCheckpointsResponse | unknown;
+    const list =
+      raw && typeof raw === "object" && Array.isArray((raw as RawCheckpointsResponse).checkpoints)
+        ? (raw as RawCheckpointsResponse).checkpoints!
+        : Array.isArray(raw)
+          ? (raw as RawCheckpointsResponse["checkpoints"])!
+          : [];
+    return list.map((c) => {
+      const name = String(c?.name ?? "unnamed");
+      const ts = c?.timestamp;
+      return {
+        id: name,
+        name,
+        step: typeof c?.episodes === "number" ? c.episodes : 0,
+        createdAt: ts == null ? "" : String(ts),
+        notes:
+          c?.metadata && typeof c.metadata === "object" && Object.keys(c.metadata).length > 0
+            ? JSON.stringify(c.metadata)
+            : null,
+      };
+    });
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -73,6 +115,23 @@ export async function getTrainingConfigs(): Promise<TrainingConfigInfo[]> {
   }
 }
 
+/**
+ * Backend wire shape for /api/training/status:
+ *   {running, job_id, pid, started_at, exit_code?, config_path?, episodes?,
+ *    resume_from?, log_tail: string[], log_path?}
+ * The frontend `TrainingStatus` uses camelCase + a subset of fields
+ * (running/episode/totalEpisodes/policyLoss/valueLoss/entropy). Live
+ * metric fields (policyLoss/...) are pushed via the WS `metrics_sample`
+ * frame, so the /status endpoint only fills running + episode budgets.
+ */
+interface RawTrainingStatus {
+  running?: boolean;
+  episodes?: number | null;
+  job_id?: string | null;
+  pid?: number | null;
+  started_at?: number;
+}
+
 /** Get a one-shot snapshot of the training loop state. */
 export async function getTrainingStatus(): Promise<TrainingStatus | null> {
   try {
@@ -81,7 +140,13 @@ export async function getTrainingStatus(): Promise<TrainingStatus | null> {
       headers: { Accept: "application/json" },
     });
     if (!res.ok) return null;
-    return (await res.json()) as TrainingStatus;
+    const raw = (await res.json()) as RawTrainingStatus | null;
+    if (!raw || typeof raw !== "object") return null;
+    return {
+      running: Boolean(raw.running),
+      episode: 0, // backend does not track in-flight episode for V1; comes via WS metrics_sample
+      totalEpisodes: typeof raw.episodes === "number" ? raw.episodes : 0,
+    };
   } catch {
     return null;
   }
