@@ -117,6 +117,8 @@ export interface AgentSnapshot {
   /** True if currently broadcasting comms this tick. */
   isTalking: boolean;
   hasBomb: boolean;
+  /** True if the defender is carrying a defuse kit (faster defuse). */
+  hasDefuseKit: boolean;
   weapons: WeaponState[];
   activeWeaponIdx: number;
   kills: number;

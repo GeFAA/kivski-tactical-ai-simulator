@@ -258,6 +258,7 @@ export function decodeAgentSnapshot(
   const team: Team = TEAM_INT_TO_STRING[teamInt] ?? "yellow";
   const weaponInt = toInt(raw.weapon, 0);
   const hasBomb = toBool(raw.has_bomb, false);
+  const hasDefuseKit = toBool(raw.has_defuse_kit, false);
   const isAlive = toBool(raw.alive, true);
 
   // Derived planting/defusing flags: the bomb only reports its carrier or
@@ -287,6 +288,7 @@ export function decodeAgentSnapshot(
     // V1 backend does not yet have a comm "talking now" flag.
     isTalking: false,
     hasBomb,
+    hasDefuseKit,
     weapons: weaponsFromInt(weaponInt),
     activeWeaponIdx: 0,
     kills: toInt(raw.kills_round, 0),
