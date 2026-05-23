@@ -28,9 +28,7 @@ async def main() -> int:
         page.on("pageerror", lambda exc: errors.append(f"pageerror: {exc}"))
         page.on(
             "console",
-            lambda msg: errors.append(f"console-{msg.type}: {msg.text}")
-            if msg.type == "error"
-            else None,
+            lambda msg: errors.append(f"console-{msg.type}: {msg.text}") if msg.type == "error" else None,
         )
 
         await page.goto("http://localhost:5173")

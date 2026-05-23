@@ -8,6 +8,7 @@ If not, the broadcaster isn't pushing → fix backend.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import urllib.request
@@ -37,7 +38,7 @@ async def main(seconds: int = 40) -> int:
         while asyncio.get_event_loop().time() < end:
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=2)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             try:
                 data = json.loads(msg)
@@ -51,20 +52,18 @@ async def main(seconds: int = 40) -> int:
     print(f"\n[debug] WS frame counts after {seconds}s:")
     for ftype, n in counts.most_common():
         print(f"  {ftype:<24} {n}")
-    print(f"\n[debug] sample metrics/training frames:")
+    print("\n[debug] sample metrics/training frames:")
     for s in samples:
         print(f"  {json.dumps(s)[:200]}")
 
     # Cleanup
-    try:
+    with contextlib.suppress(Exception):
         urllib.request.urlopen(
             urllib.request.Request(
                 f"http://127.0.0.1:8000/api/match/{mid}",
                 method="DELETE",
             )
         )
-    except Exception:
-        pass
 
     return 0
 
