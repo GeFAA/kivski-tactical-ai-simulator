@@ -60,6 +60,30 @@ const App = () => {
             break;
           case "training_status":
             setTrainingStatus(frame.data);
+            // Mirror the metric fields into the metrics stream so the
+            // sparklines get a fresh data point on every WS push, even
+            // when the trainer is between PPO updates and re-emits the
+            // same numeric values. Otherwise React's dependency array
+            // dedups identical values and the sparkline sits at 1 point.
+            if (
+              typeof frame.data.policyLoss === "number" ||
+              typeof frame.data.valueLoss === "number" ||
+              typeof frame.data.entropy === "number"
+            ) {
+              pushMetricsSample({
+                episode: frame.data.episode ?? 0,
+                policyLoss: frame.data.policyLoss,
+                valueLoss: frame.data.valueLoss,
+                entropy: frame.data.entropy,
+              });
+              pushEvent({
+                id: `train-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                ts: Date.now(),
+                tick: 0,
+                kind: "info",
+                text: `Training update — ep ${frame.data.episode ?? 0}, loss=${(frame.data.policyLoss ?? 0).toFixed(4)}, entropy=${(frame.data.entropy ?? 0).toFixed(2)}`,
+              });
+            }
             break;
           case "metrics_sample":
             pushMetricsSample(frame.data);

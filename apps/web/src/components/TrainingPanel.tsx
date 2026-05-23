@@ -90,6 +90,12 @@ const StatRow = ({
 const TrainingPanel = () => {
   const trainingStatus = useStore((s) => s.trainingStatus);
   const setTrainingStatus = useStore((s) => s.setTrainingStatus);
+  // Sparklines now derived from metricsHistory, which gets a fresh
+  // point on every WS push (App.tsx mirrors training_status frames into
+  // pushMetricsSample). This bypasses React's useEffect-dependency dedup
+  // that otherwise pinned the sparkline at one sample whenever the
+  // trainer re-emitted an identical metric.
+  const metricsHistory = useStore((s) => s.metricsHistory);
 
   const [configs, setConfigs] = useState<TrainingConfigInfo[]>([]);
   const [selectedConfig, setSelectedConfig] = useState<string>("");
@@ -99,34 +105,31 @@ const TrainingPanel = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Sparkline buffers. Plain state so React re-renders whenever a new
-  // WS-pushed training_status arrives — using refs here would silently
-  // pin the sparkline to its first sample.
-  const [policyBuf, setPolicyBuf] = useState<number[]>([]);
-  const [valueBuf, setValueBuf] = useState<number[]>([]);
-  const [entropyBuf, setEntropyBuf] = useState<number[]>([]);
-
-  // Append every fresh WS-pushed training_status into the sparkline buffers.
-  useEffect(() => {
-    if (typeof trainingStatus.policyLoss === "number") {
-      setPolicyBuf((prev) => {
-        const next = [...prev, trainingStatus.policyLoss as number];
-        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
-      });
-    }
-    if (typeof trainingStatus.valueLoss === "number") {
-      setValueBuf((prev) => {
-        const next = [...prev, trainingStatus.valueLoss as number];
-        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
-      });
-    }
-    if (typeof trainingStatus.entropy === "number") {
-      setEntropyBuf((prev) => {
-        const next = [...prev, trainingStatus.entropy as number];
-        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
-      });
-    }
-  }, [trainingStatus.policyLoss, trainingStatus.valueLoss, trainingStatus.entropy]);
+  // Derived sparkline buffers — tail of metricsHistory.
+  const policyBuf = useMemo(
+    () =>
+      metricsHistory
+        .slice(-SPARK_WINDOW)
+        .map((s) => s.policyLoss)
+        .filter((v): v is number => typeof v === "number"),
+    [metricsHistory],
+  );
+  const valueBuf = useMemo(
+    () =>
+      metricsHistory
+        .slice(-SPARK_WINDOW)
+        .map((s) => s.valueLoss)
+        .filter((v): v is number => typeof v === "number"),
+    [metricsHistory],
+  );
+  const entropyBuf = useMemo(
+    () =>
+      metricsHistory
+        .slice(-SPARK_WINDOW)
+        .map((s) => s.entropy)
+        .filter((v): v is number => typeof v === "number"),
+    [metricsHistory],
+  );
 
   // Initial config + checkpoint fetch.
   useEffect(() => {
