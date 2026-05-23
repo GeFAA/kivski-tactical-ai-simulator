@@ -155,9 +155,9 @@ async def _run(headless: bool = True) -> int:
             while (time.time() - start) * 1000 < timeout_ms:
                 for f in reversed(ws_frames_received):
                     payload = f.get("payload", "")
-                    if (
-                        '"type":"snapshot"' in payload or '"type": "snapshot"' in payload
-                    ) and field_check(payload):
+                    if ('"type":"snapshot"' in payload or '"type": "snapshot"' in payload) and field_check(
+                        payload
+                    ):
                         return True
                 await page.wait_for_timeout(150)
             return False
