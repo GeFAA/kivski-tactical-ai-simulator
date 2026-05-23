@@ -356,6 +356,10 @@ class CheckpointPolicy(PolicyAdapter):
         if not self.path.is_file():
             _LOG.warning("Checkpoint file %s missing -- falling back to RandomPolicy", self.path)
             return
+        # V1: load to CPU. Inference latency for one match at 10 Hz broadcast
+        # is dominated by the engine step, not by the model forward, so a CPU
+        # tensor here keeps the GPU memory free for the training process that
+        # usually owns the active CUDA context.
         try:
             self._model = torch.load(str(self.path), map_location="cpu", weights_only=False)
         except Exception as exc:  # pragma: no cover -- defensive

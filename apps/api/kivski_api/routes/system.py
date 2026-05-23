@@ -33,11 +33,25 @@ _PROCESS_STARTED_AT = time.time()
 
 
 def _torch_info() -> dict[str, Any]:
-    """Return ``{torch_version, cuda_available, cuda_device}`` -- best effort."""
+    """Return torch + CUDA introspection -- best effort, never raises.
+
+    On CUDA-capable systems also surfaces the compute capability and
+    memory totals for the active device so the frontend ``SystemInfo``
+    panel can show a one-line GPU summary ("RTX 4070 SUPER, 12 GB, sm_89").
+    Memory usage is sampled per request via ``torch.cuda.memory_allocated``
+    which is cheap and reflects the live training process when the API
+    and trainer share the same CUDA context (i.e. both ran in-process or
+    via the launcher's hosted trainer subprocess that imports the same
+    venv torch).
+    """
     info: dict[str, Any] = {
         "torch_version": None,
         "cuda_available": False,
         "cuda_device": None,
+        "cuda_compute_capability": None,
+        "gpu_total_memory_gb": None,
+        "gpu_used_memory_gb": None,
+        "gpu_reserved_memory_gb": None,
     }
     try:
         import torch  # type: ignore[import-not-found]
@@ -48,6 +62,22 @@ def _torch_info() -> dict[str, Any]:
             if info["cuda_available"]:
                 # device 0 is the conventional default
                 info["cuda_device"] = str(torch.cuda.get_device_name(0))
+                try:
+                    major, minor = torch.cuda.get_device_capability(0)
+                    info["cuda_compute_capability"] = f"{int(major)}.{int(minor)}"
+                except Exception:
+                    info["cuda_compute_capability"] = None
+                try:
+                    props = torch.cuda.get_device_properties(0)
+                    info["gpu_total_memory_gb"] = float(props.total_memory) / 1e9
+                except Exception:
+                    info["gpu_total_memory_gb"] = None
+                try:
+                    info["gpu_used_memory_gb"] = float(torch.cuda.memory_allocated(0)) / 1e9
+                    info["gpu_reserved_memory_gb"] = float(torch.cuda.memory_reserved(0)) / 1e9
+                except Exception:
+                    info["gpu_used_memory_gb"] = None
+                    info["gpu_reserved_memory_gb"] = None
         except Exception:
             # torch present but CUDA probe blew up -- leave defaults
             info["cuda_available"] = False
@@ -89,6 +119,10 @@ async def system_info() -> dict[str, Any]:
         "torch_version": info["torch_version"],
         "cuda_available": bool(info["cuda_available"]),
         "cuda_device": info["cuda_device"],
+        "cuda_compute_capability": info["cuda_compute_capability"],
+        "gpu_total_memory_gb": info["gpu_total_memory_gb"],
+        "gpu_used_memory_gb": info["gpu_used_memory_gb"],
+        "gpu_reserved_memory_gb": info["gpu_reserved_memory_gb"],
         "uptime_s": float(time.time() - _PROCESS_STARTED_AT),
         "pid": os.getpid(),
     }

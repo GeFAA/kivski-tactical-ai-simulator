@@ -30,6 +30,10 @@ interface SystemInfoPayload {
   torch_version?: string | null;
   cuda_available?: boolean | null;
   cuda_device?: string | null;
+  cuda_compute_capability?: string | null;
+  gpu_total_memory_gb?: number | null;
+  gpu_used_memory_gb?: number | null;
+  gpu_reserved_memory_gb?: number | null;
   uptime_s?: number | null;
   pid?: number | null;
 }
@@ -312,6 +316,30 @@ const SystemInfo = () => {
           }
           title={info?.cuda_device ?? ""}
         />
+        {info?.cuda_available && info?.cuda_compute_capability && (
+          <Row
+            label="Compute"
+            value={`sm_${info.cuda_compute_capability.replace(".", "")}`}
+            title={`CUDA compute capability ${info.cuda_compute_capability}`}
+          />
+        )}
+        {info?.cuda_available &&
+          typeof info?.gpu_total_memory_gb === "number" && (
+            <Row
+              label="GPU Mem"
+              value={`${fmtNumber(info?.gpu_used_memory_gb ?? 0, 2)} / ${fmtNumber(
+                info.gpu_total_memory_gb,
+                1,
+              )} GB`}
+              title={
+                typeof info?.gpu_reserved_memory_gb === "number"
+                  ? `allocated / total — reserved by torch: ${info.gpu_reserved_memory_gb.toFixed(
+                      2,
+                    )} GB`
+                  : "torch.cuda.memory_allocated / device total"
+              }
+            />
+          )}
         <Row
           label="Kivski API"
           value={info?.kivski_api_version ?? "—"}

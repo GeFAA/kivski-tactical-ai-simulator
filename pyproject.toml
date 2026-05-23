@@ -46,6 +46,16 @@ dependencies = [
 
 [project.optional-dependencies]
 wandb = ["wandb>=0.16"]
+# CUDA build of PyTorch is NOT a pip-installable extra (PyTorch publishes
+# platform-specific wheels via its own index). Install with:
+#   pip install --index-url https://download.pytorch.org/whl/cu126 \
+#       torch torchvision
+# Replace cu126 with cu128 / cu121 / cu118 to match your driver, or rely
+# on `--device auto` in `kivski-train` to fall back to CPU if no CUDA
+# device is visible. The `cuda` extra here is a no-op marker so users can
+# `pip install kivski[cuda]` without surprise -- the actual install must
+# go through the PyTorch index.
+cuda = []
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

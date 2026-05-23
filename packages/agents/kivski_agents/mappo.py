@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import time
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,38 @@ class MAPPOTrainer:
         # Bookkeeping for telemetry / checkpoint sidecars.
         self._update_steps: int = 0
 
+        # ---- Mixed precision (autocast bf16) ----
+        # bfloat16 is numerically stable on Ampere+ (compute 8.0+) without
+        # needing a GradScaler. We enable it automatically when running on
+        # a CUDA device that supports bf16. Falls back transparently to
+        # fp32 on CPU or on older GPUs.
+        self.amp_enabled: bool = False
+        self.amp_dtype: torch.dtype = torch.float32
+        if self.device.type == "cuda":
+            try:
+                if torch.cuda.is_bf16_supported():
+                    self.amp_enabled = True
+                    self.amp_dtype = torch.bfloat16
+            except Exception:
+                # Defensive: any probe failure means we stay in fp32.
+                self.amp_enabled = False
+
+        # ---- Mixed precision (autocast bf16) ----
+        # bfloat16 is numerically stable on Ampere+ (compute 8.0+) without
+        # needing a GradScaler. We enable it automatically when running on
+        # a CUDA device that supports bf16. Falls back transparently to
+        # fp32 on CPU or on older GPUs.
+        self.amp_enabled: bool = False
+        self.amp_dtype: torch.dtype = torch.float32
+        if self.device.type == "cuda":
+            try:
+                if torch.cuda.is_bf16_supported():
+                    self.amp_enabled = True
+                    self.amp_dtype = torch.bfloat16
+            except Exception:
+                # Defensive: any probe failure means we stay in fp32.
+                self.amp_enabled = False
+
     # --------------------------------------------------------------
     # Single PPO update over a populated buffer
     # --------------------------------------------------------------
@@ -108,50 +141,60 @@ class MAPPOTrainer:
         all_returns: list[torch.Tensor] = []
         all_values_pred: list[torch.Tensor] = []
 
+        # Autocast context for mixed-precision forward+loss on CUDA. bf16
+        # has the same exponent range as fp32 so we can skip the GradScaler
+        # entirely (which fp16 would need to avoid underflow).
+        amp_ctx = (
+            torch.amp.autocast(device_type="cuda", dtype=self.amp_dtype)
+            if self.amp_enabled
+            else nullcontext()
+        )
+
         self.model.train()
         for _epoch in range(epochs):
             for batch in buffer.minibatch_iter(minibatch_size, shuffle=True):
-                eval_out = self.model.evaluate(
-                    obs=batch.observations,
-                    hidden_state=batch.hidden_states,
-                    received_comm=batch.received_comms,
-                    prev_actions=batch.actions,
-                    joint_obs=batch.joint_observations,
-                    masks=batch.masks,
-                )
-                new_log_probs = eval_out["log_probs"]
-                entropy = eval_out["entropy"]
-                new_values = eval_out["value"].squeeze(-1)
+                with amp_ctx:
+                    eval_out = self.model.evaluate(
+                        obs=batch.observations,
+                        hidden_state=batch.hidden_states,
+                        received_comm=batch.received_comms,
+                        prev_actions=batch.actions,
+                        joint_obs=batch.joint_observations,
+                        masks=batch.masks,
+                    )
+                    new_log_probs = eval_out["log_probs"]
+                    entropy = eval_out["entropy"]
+                    new_values = eval_out["value"].squeeze(-1)
 
-                # ---- Policy loss (clipped surrogate) ----
-                advantages = batch.advantages
-                # Normalise advantages within the minibatch -- standard PPO
-                # trick that keeps the gradient scale stable.
-                if advantages.numel() > 1:
-                    adv_mean = advantages.mean()
-                    adv_std = advantages.std().clamp_min(1e-6)
-                    advantages = (advantages - adv_mean) / adv_std
+                    # ---- Policy loss (clipped surrogate) ----
+                    advantages = batch.advantages
+                    # Normalise advantages within the minibatch -- standard PPO
+                    # trick that keeps the gradient scale stable.
+                    if advantages.numel() > 1:
+                        adv_mean = advantages.mean()
+                        adv_std = advantages.std().clamp_min(1e-6)
+                        advantages = (advantages - adv_mean) / adv_std
 
-                log_ratio = new_log_probs - batch.old_log_probs
-                ratio = torch.exp(log_ratio)
-                surr1 = ratio * advantages
-                surr2 = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantages
-                # Only count alive agents in the policy loss.
-                mask = batch.masks
-                mask_sum = mask.sum().clamp_min(1.0)
-                policy_loss = -(torch.min(surr1, surr2) * mask).sum() / mask_sum
+                    log_ratio = new_log_probs - batch.old_log_probs
+                    ratio = torch.exp(log_ratio)
+                    surr1 = ratio * advantages
+                    surr2 = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantages
+                    # Only count alive agents in the policy loss.
+                    mask = batch.masks
+                    mask_sum = mask.sum().clamp_min(1.0)
+                    policy_loss = -(torch.min(surr1, surr2) * mask).sum() / mask_sum
 
-                # ---- Value loss (with clipping) ----
-                v_clipped = batch.old_values + torch.clamp(new_values - batch.old_values, -clip, clip)
-                v_loss_unclipped = F.mse_loss(new_values, batch.returns, reduction="none")
-                v_loss_clipped = F.mse_loss(v_clipped, batch.returns, reduction="none")
-                # Value is centralised -- use the simple mean across the minibatch.
-                value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                    # ---- Value loss (with clipping) ----
+                    v_clipped = batch.old_values + torch.clamp(new_values - batch.old_values, -clip, clip)
+                    v_loss_unclipped = F.mse_loss(new_values, batch.returns, reduction="none")
+                    v_loss_clipped = F.mse_loss(v_clipped, batch.returns, reduction="none")
+                    # Value is centralised -- use the simple mean across the minibatch.
+                    value_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
 
-                # ---- Entropy bonus ----
-                entropy_term = (entropy * mask).sum() / mask_sum
+                    # ---- Entropy bonus ----
+                    entropy_term = (entropy * mask).sum() / mask_sum
 
-                total_loss = policy_loss + val_coef * value_loss - ent_coef * entropy_term
+                    total_loss = policy_loss + val_coef * value_loss - ent_coef * entropy_term
 
                 self.optimizer.zero_grad(set_to_none=True)
                 total_loss.backward()

@@ -26,16 +26,54 @@ app = typer.Typer(add_completion=False, help="Run the Kivski MAPPO training loop
 
 
 def _pick_device(name: str):  # -> torch.device  (lazy import for tests)
-    """Resolve ``"auto" / "cuda" / "cpu" / "mps"`` to a ``torch.device``."""
+    """Resolve ``"auto" / "cuda" / "cpu" / "mps"`` to a ``torch.device``.
+
+    ``"auto"`` prefers CUDA, then MPS, falling back to CPU. Explicit
+    ``"cuda"`` raises if no CUDA device is visible -- this is intentional
+    so a misconfigured launcher surfaces immediately instead of silently
+    falling back to a 10x slower CPU run.
+    """
     import torch  # local import keeps the CLI importable without torch
 
-    if name == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-            return torch.device("mps")
+    name_l = str(name).strip().lower()
+    if name_l == "cpu":
         return torch.device("cpu")
-    return torch.device(str(name))
+    if name_l == "cuda":
+        if not torch.cuda.is_available():
+            raise SystemExit(
+                "[kivski-train] --device cuda requested but torch.cuda.is_available() is False. "
+                "Install a CUDA build: pip install --index-url "
+                "https://download.pytorch.org/whl/cu126 torch torchvision"
+            )
+        return torch.device("cuda")
+    if name_l == "mps":
+        return torch.device("mps")
+    # auto
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _describe_device(device) -> str:  # -> str
+    """Render a short human-readable device tag for the startup log line."""
+    import torch  # local
+
+    try:
+        if device.type == "cuda":
+            idx = device.index if device.index is not None else 0
+            name = torch.cuda.get_device_name(idx)
+            try:
+                props = torch.cuda.get_device_properties(idx)
+                total_gb = float(props.total_memory) / 1e9
+                major, minor = torch.cuda.get_device_capability(idx)
+                return f"cuda:{idx} ({name}, {total_gb:.1f} GB, sm_{major}{minor})"
+            except Exception:
+                return f"cuda:{idx} ({name})"
+        return str(device)
+    except Exception:
+        return str(device)
 
 
 def _override_seed(cfg: KivskiConfig, seed: int) -> KivskiConfig:
@@ -140,11 +178,17 @@ def train(
     )
 
     typer.echo(
-        f"[kivski-train] run={rn} device={torch_device} vec_kind={tcfg.vec_kind} "
+        f"[kivski-train] run={rn} device={_describe_device(torch_device)} "
+        f"vec_kind={tcfg.vec_kind} "
         f"num_envs={tcfg.num_envs} num_workers={tcfg.num_workers} "
         f"rollout_steps={tcfg.rollout_steps} total_episodes={tcfg.total_episodes}"
     )
     trainer = Trainer(cfg, tcfg, telemetry=sink)
+    if torch_device.type == "cuda":
+        typer.echo(
+            f"[kivski-train] mixed_precision=bf16:{trainer.mappo.amp_enabled} "
+            f"amp_dtype={trainer.mappo.amp_dtype}"
+        )
     try:
         trainer.train()
     finally:
@@ -240,7 +284,8 @@ def smoke(
 
     t0 = _time.perf_counter()
     typer.echo(
-        f"[kivski-smoke] run={rn} device={torch_device} vec_kind={tcfg.vec_kind} "
+        f"[kivski-smoke] run={rn} device={_describe_device(torch_device)} "
+        f"vec_kind={tcfg.vec_kind} "
         f"num_envs={tcfg.num_envs} num_workers={tcfg.num_workers} "
         f"rollout_steps={tcfg.rollout_steps} target_episodes={tcfg.total_episodes}"
     )

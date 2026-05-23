@@ -2,6 +2,26 @@
 
 All notable changes to the Kivski Tactical AI Simulator.
 
+## [Unreleased]
+
+### Added — GPU acceleration
+- **CUDA PyTorch support**: install `torch --index-url https://download.pytorch.org/whl/cu126`
+  (or cu128 / cu121 / cu118 to match your driver) and the trainer auto-picks
+  CUDA via `--device auto`. Explicit `--device cuda` now raises with a clear
+  install-hint instead of silently falling back to CPU.
+- **Mixed precision (bf16)** in `MAPPOTrainer.update()`: forward + loss computed
+  under `torch.amp.autocast("cuda", dtype=bfloat16)` whenever CUDA reports
+  `is_bf16_supported()`. bf16 keeps the fp32 exponent range so no `GradScaler`
+  is needed; on Ampere+ (sm_80+) this is numerically stable and ~30-50% faster
+  on the PPO update step. CPU runs stay in fp32 transparently.
+- **`/api/system/info` GPU stats**: `cuda_compute_capability` (e.g. `8.9` for
+  Ada Lovelace), `gpu_total_memory_gb`, `gpu_used_memory_gb`, and
+  `gpu_reserved_memory_gb` (torch-internal stats; cheap per-request probe).
+  Frontend `SystemInfo` panel surfaces `Compute` (sm_XX) and `GPU Mem` rows
+  when CUDA is available.
+- **Train log line** now describes the device with name + VRAM + compute cap:
+  `device=cuda:0 (NVIDIA GeForce RTX 4070 SUPER, 12.3 GB, sm_89)`.
+
 ## [0.3.0] — 2026-05-23
 
 ### Fixed — visual bugs reported by user

@@ -94,6 +94,19 @@ pip install -e ".[dev]"
 # Optional: install everything (dev + wandb)
 # pip install -e ".[all]"
 
+# Optional: CUDA PyTorch (5-10x faster PPO updates on Ampere+ / Ada GPUs).
+# PyTorch ships GPU wheels on its own index, not on PyPI. Pick the build
+# that matches your driver (`nvidia-smi` to check CUDA version):
+#   cu126 → CUDA 12.6 (RTX 30/40/50, sm_80+, most modern drivers)
+#   cu128 → CUDA 12.8 (latest)
+#   cu121 → CUDA 12.1
+#   cu118 → CUDA 11.8 (older drivers)
+# Example for RTX 40-series with a 555+ driver:
+# pip install --upgrade --index-url https://download.pytorch.org/whl/cu126 `
+#     torch torchvision
+# Verify: python -c "import torch; print(torch.cuda.is_available())"
+# The trainer then auto-detects CUDA on `kivski-train train --device auto`.
+
 # Frontend (Node workspace at the repo root)
 npm install
 ```
