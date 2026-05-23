@@ -23,6 +23,24 @@ const MAX_HEATMAP_POSITIONS = 4000;
 
 // ---------- State shape ----------
 
+/**
+ * Per-team policy descriptor for the comparison-match UI. Both fields
+ * are stored verbatim from the backend's `/api/match/new` response so
+ * the header can show a friendly label without re-translating ids:
+ *
+ *   - `id`   = policy specifier passed to the backend
+ *              ("random", "scripted_rush", "latest", "best",
+ *              "checkpoint:<name>", or a raw ckpt path).
+ *   - `name` = human-readable label for display.
+ *
+ * Null fields mean the policy is unknown (e.g. before the first match
+ * is created or when the backend doesn't report the field).
+ */
+export interface PolicyAssignment {
+  id: string;
+  name: string;
+}
+
 interface MatchState {
   tick: number;
   round: number;
@@ -41,6 +59,15 @@ interface MatchState {
    * so they must short-circuit until this is set.
    */
   currentMatchId: string | null;
+  /**
+   * Active policies per team. Populated when `/api/match/new` succeeds
+   * (or via the `setCurrentPolicies` action). `null` means the field
+   * has not yet been negotiated with the backend.
+   */
+  currentPolicies: {
+    yellow: PolicyAssignment | null;
+    blue: PolicyAssignment | null;
+  };
 }
 
 export type RightTab = "events" | "inspector" | "comms" | "metrics" | "sys";
@@ -55,6 +82,14 @@ interface UIState {
   showHeatmap: boolean;
   speed: number;
   paused: boolean;
+  /**
+   * Monotonically-incrementing token used to force the App-level
+   * WebSocket effect to tear down and re-handshake (e.g. after the
+   * comparison-match modal POSTs to /api/match/new). The actual
+   * value is irrelevant — only changes trigger React's `useEffect`
+   * re-run via dependency comparison.
+   */
+  matchToken: number;
 }
 
 interface InspectionState {
@@ -97,6 +132,17 @@ interface Actions {
   setTrainingStatus: (s: TrainingStatus) => void;
   pushMetricsSample: (s: MetricsSample) => void;
   pushRoundResult: (r: RoundResult) => void;
+  /**
+   * Update the per-team active policy descriptors. Pass `null` to clear
+   * a side back to "unknown" (e.g. when starting a fresh match without
+   * a policy override).
+   */
+  setCurrentPolicies: (
+    p: Partial<{
+      yellow: PolicyAssignment | null;
+      blue: PolicyAssignment | null;
+    }>,
+  ) => void;
 
   // UI
   selectAgent: (id: string | null) => void;
@@ -109,6 +155,12 @@ interface Actions {
   setSpeed: (s: number) => void;
   setPaused: (p: boolean) => void;
   togglePaused: () => void;
+  /**
+   * Force the App-level WebSocket subscription to re-handshake
+   * (used after `/api/match/new` to switch policies). Simply
+   * increments `matchToken` so `useEffect` deps differ.
+   */
+  setMatchToken: () => void;
 
   reset: () => void;
 }
@@ -133,6 +185,7 @@ const initialMatch: MatchState = {
   mapName: "dustline",
   connected: false,
   currentMatchId: null,
+  currentPolicies: { yellow: null, blue: null },
 };
 
 const initialUI: UIState = {
@@ -145,6 +198,7 @@ const initialUI: UIState = {
   showHeatmap: false,
   speed: 1,
   paused: false,
+  matchToken: 0,
 };
 
 const initialInspection: InspectionState = { byAgent: {}, attentionWeights: {} };
@@ -277,6 +331,14 @@ export const useStore = create<AppState>((set) => ({
 
   setMapName: (name) => set({ mapName: name }),
 
+  setCurrentPolicies: (p) =>
+    set((s) => ({
+      currentPolicies: {
+        yellow: p.yellow === undefined ? s.currentPolicies.yellow : p.yellow,
+        blue: p.blue === undefined ? s.currentPolicies.blue : p.blue,
+      },
+    })),
+
   setAttentionWeights: (a) =>
     set((s) => {
       const inner: Record<string, number> = {};
@@ -318,6 +380,7 @@ export const useStore = create<AppState>((set) => ({
   setSpeed: (s) => set({ speed: s }),
   setPaused: (p) => set({ paused: p }),
   togglePaused: () => set((s) => ({ paused: !s.paused })),
+  setMatchToken: () => set((s) => ({ matchToken: s.matchToken + 1 })),
 
   reset: () =>
     set({
@@ -336,6 +399,26 @@ export const selectAttackers = (s: AppState): AgentSnapshot[] =>
 
 export const selectDefenders = (s: AppState): AgentSnapshot[] =>
   s.agents.filter((a) => a.side === "defender");
+
+/**
+ * Sidebar grouping selectors. Agents are grouped by their persistent
+ * `team` (yellow / blue) so the sidebar layout doesn't reshuffle when
+ * sides switch at round 12 — only the role label / accent colour
+ * changes inside each block. See `LeftSidebar` for the consuming view.
+ */
+export const selectYellowTeam = (s: AppState): AgentSnapshot[] =>
+  s.agents.filter((a) => a.team === "yellow");
+
+export const selectBlueTeam = (s: AppState): AgentSnapshot[] =>
+  s.agents.filter((a) => a.team === "blue");
+
+/** Current side role of a team, derived from any one of its agents. */
+export const teamCurrentSide = (
+  players: AgentSnapshot[],
+): AgentSnapshot["side"] | null => {
+  if (players.length === 0) return null;
+  return players[0].side;
+};
 
 export const selectSelectedAgent = (s: AppState): AgentSnapshot | null => {
   if (!s.selectedAgentId) return null;

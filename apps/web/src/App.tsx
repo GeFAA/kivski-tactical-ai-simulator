@@ -22,6 +22,11 @@ const App = () => {
   const setTrainingStatus = useStore((s) => s.setTrainingStatus);
   const pushMetricsSample = useStore((s) => s.pushMetricsSample);
   const pushRoundResult = useStore((s) => s.pushRoundResult);
+  const setCurrentPolicies = useStore((s) => s.setCurrentPolicies);
+  // `matchToken` is incremented by `MatchSetupModal` after POSTing a new
+  // comparison match — it forces this effect to re-run, which tears down
+  // the current WebSocket and opens a fresh one against the new match.
+  const matchToken = useStore((s) => s.matchToken);
 
   // Wire up the live match WebSocket once at mount. The handle's `.close()`
   // tears down the reconnect loop on hot-reload / unmount.
@@ -29,6 +34,7 @@ const App = () => {
     const handle = subscribeMatch({
       onStatus: (status) => setConnected(status === "open"),
       onMatchId: (id) => setCurrentMatchId(id),
+      onPolicies: (yellow, blue) => setCurrentPolicies({ yellow, blue }),
       onFrame: (frame) => {
         switch (frame.type) {
           case "hello":
@@ -81,8 +87,10 @@ const App = () => {
     });
     return () => handle.close();
   }, [
+    matchToken,
     setConnected,
     setCurrentMatchId,
+    setCurrentPolicies,
     setMatchSnapshot,
     pushEvent,
     pushMessage,

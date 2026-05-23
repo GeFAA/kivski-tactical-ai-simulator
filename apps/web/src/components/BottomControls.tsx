@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCheckpoints, postCommand, type CheckpointInfo } from "@/lib/api-client";
 import { useStore } from "@/lib/store";
+import MatchSetupModal from "@/components/MatchSetupModal";
 
 const SPEEDS = [0.5, 1, 2, 4, 16];
 
@@ -16,6 +17,7 @@ const BottomControls = () => {
   const [selectedCkpt, setSelectedCkpt] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [matchModalOpen, setMatchModalOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -83,6 +85,16 @@ const BottomControls = () => {
             ))}
           </div>
         </div>
+
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setMatchModalOpen(true)}
+          disabled={busy !== null}
+          title="Pick policies for both teams and start a fresh comparison match"
+        >
+          New Match
+        </button>
 
         <button
           type="button"
@@ -208,6 +220,11 @@ const BottomControls = () => {
           )}
         </div>
       )}
+
+      <MatchSetupModal
+        open={matchModalOpen}
+        onClose={() => setMatchModalOpen(false)}
+      />
     </footer>
   );
 };

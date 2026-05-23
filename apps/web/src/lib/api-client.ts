@@ -43,6 +43,78 @@ export interface CheckpointInfo {
 }
 
 /**
+ * Single option in the "policy picker" dropdown for the comparison-match
+ * setup modal. Backend (v0.3) exposes
+ * ``GET /api/checkpoints/recommended`` returning ``{options: [...]}`` so
+ * we can render a curated list (random / scripted variants + latest +
+ * best + named ckpts) without leaking implementation details (paths,
+ * heuristics) into the frontend.
+ */
+export interface PolicyOption {
+  /** Stable identifier passed back to /api/match/new as `policy_yellow` / `policy_blue`. */
+  id: string;
+  /** Human-readable label shown in the dropdown. */
+  name: string;
+}
+
+/**
+ * Defense-in-depth fallback used when ``/api/checkpoints/recommended``
+ * is not yet wired up on the backend. Keeps the comparison-match UI
+ * functional with the always-available baselines.
+ */
+const FALLBACK_POLICY_OPTIONS: readonly PolicyOption[] = [
+  { id: "random", name: "Random" },
+  { id: "scripted_rush", name: "Scripted (Rush)" },
+  { id: "scripted_hold", name: "Scripted (Hold)" },
+  { id: "latest", name: "Latest Checkpoint" },
+  { id: "best", name: "Best Checkpoint" },
+] as const;
+
+interface RawRecommendedResponse {
+  options?: Array<{ id?: unknown; name?: unknown } | string>;
+}
+
+/**
+ * Fetch the curated list of policy options for the comparison-match
+ * picker. Falls back to a hardcoded baseline list when the endpoint is
+ * unavailable so the modal always has something to render — the user
+ * can still pick `random` / `scripted_rush` / `scripted_hold` against
+ * an early backend.
+ */
+export async function getRecommendedPolicies(): Promise<PolicyOption[]> {
+  try {
+    const res = await fetch(`${API_BASE}/checkpoints/recommended`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return [...FALLBACK_POLICY_OPTIONS];
+    const raw = (await res.json()) as RawRecommendedResponse | unknown;
+    const list =
+      raw && typeof raw === "object" && Array.isArray((raw as RawRecommendedResponse).options)
+        ? (raw as RawRecommendedResponse).options!
+        : Array.isArray(raw)
+          ? (raw as RawRecommendedResponse["options"])!
+          : [];
+    const parsed: PolicyOption[] = [];
+    for (const entry of list ?? []) {
+      if (typeof entry === "string") {
+        if (entry.length === 0) continue;
+        parsed.push({ id: entry, name: entry });
+      } else if (entry && typeof entry === "object") {
+        const id = typeof entry.id === "string" ? entry.id : null;
+        if (id === null || id.length === 0) continue;
+        const name = typeof entry.name === "string" && entry.name.length > 0 ? entry.name : id;
+        parsed.push({ id, name });
+      }
+    }
+    if (parsed.length === 0) return [...FALLBACK_POLICY_OPTIONS];
+    return parsed;
+  } catch {
+    return [...FALLBACK_POLICY_OPTIONS];
+  }
+}
+
+/**
  * Backend wire shape for /api/checkpoints — list_checkpoints() returns
  * `{checkpoints: [...], loaded: name|null}` where each entry has
  * `{name, path, size_bytes, episodes, timestamp, metadata, loaded}`.
@@ -320,6 +392,14 @@ export interface CreateMatchResult {
   seed?: number | null;
   policy_yellow?: string | null;
   policy_blue?: string | null;
+  /**
+   * Human-readable label for the selected yellow policy (e.g. "Random",
+   * "Best Checkpoint", "run-001-ep12000"). Backend v0.3 returns these so
+   * the header can display the active policies without translating the
+   * id locally. Optional for backwards compat with older backends.
+   */
+  policy_yellow_name?: string | null;
+  policy_blue_name?: string | null;
   paused?: boolean;
 }
 
@@ -362,14 +442,44 @@ export interface SubscribeOpts {
    * target /api/match/{id}/...
    */
   onMatchId?: (id: string | null) => void;
+  /**
+   * Notified whenever the create-match handshake completes with the
+   * backend's authoritative policy descriptors
+   * (`policy_yellow`/`policy_yellow_name` etc.). Used by the header to
+   * display which policies are currently being compared.
+   */
+  onPolicies?: (yellow: PolicyAssignment | null, blue: PolicyAssignment | null) => void;
   /** Initial reconnect delay in ms. Doubles per attempt up to 15s cap. */
   baseDelayMs?: number;
+}
+
+/**
+ * Same shape as `store.ts`'s `PolicyAssignment` — duplicated here to
+ * avoid a cyclic import (the store consumes types from this file).
+ */
+export interface PolicyAssignment {
+  id: string;
+  name: string;
 }
 
 /** Build the WebSocket URL for a concrete `match_id` using the page origin. */
 function wsUrlForMatch(matchId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws/match/${encodeURIComponent(matchId)}`;
+}
+
+/**
+ * Build a `PolicyAssignment` from the create-match response fields.
+ * Returns null when no policy id was reported (older backends, or
+ * "auto" default not advertised on the wire).
+ */
+function packPolicy(
+  id: string | null | undefined,
+  name: string | null | undefined,
+): PolicyAssignment | null {
+  if (typeof id !== "string" || id.length === 0) return null;
+  const display = typeof name === "string" && name.length > 0 ? name : id;
+  return { id, name: display };
 }
 
 /**
@@ -429,12 +539,33 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame | null {
         (dataField && typeof dataField.message === "string" ? dataField.message : "unknown error");
       return { type: "error", data: { message } };
     }
+    case "metrics_sample": {
+      // Normalise snake_case → camelCase so the rest of the app sees
+      // the typed `MetricsSample` shape. The backend's
+      // MetricsBroadcaster ships `{episode, winrate_vs_random,
+      // winrate_vs_scripted, policy_loss, value_loss, entropy}`.
+      const data = (obj.data ?? {}) as Record<string, unknown>;
+      const pickNumber = (k: string): number | undefined => {
+        const v = data[k];
+        return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      };
+      const episode = pickNumber("episode") ?? 0;
+      const sample = {
+        episode,
+        winrateVsRandom: pickNumber("winrate_vs_random") ?? pickNumber("winrateVsRandom"),
+        winrateVsScripted:
+          pickNumber("winrate_vs_scripted") ?? pickNumber("winrateVsScripted"),
+        policyLoss: pickNumber("policy_loss") ?? pickNumber("policyLoss"),
+        valueLoss: pickNumber("value_loss") ?? pickNumber("valueLoss"),
+        entropy: pickNumber("entropy"),
+      };
+      return { type: "metrics_sample", data: sample };
+    }
     case "event":
     case "message":
     case "inspect":
     case "attention_update":
     case "training_status":
-    case "metrics_sample":
     case "round_result":
     case "hello":
       // These frame types pass through unchanged. The runtime shape
@@ -494,6 +625,13 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
       // and the React store (via the consumer-provided callback).
       setCurrentMatchId(matchId);
       opts.onMatchId?.(matchId);
+
+      // Forward policy descriptors (used by the header). Backend v0.3+
+      // reports `policy_*` (id) + `policy_*_name` (display) on the
+      // create response; older backends omit them and we forward `null`.
+      const yellowPolicy = packPolicy(res.policy_yellow, res.policy_yellow_name);
+      const bluePolicy = packPolicy(res.policy_blue, res.policy_blue_name);
+      opts.onPolicies?.(yellowPolicy, bluePolicy);
 
       console.warn("[kivski] created match", matchId, "on", mapName);
       return matchId;

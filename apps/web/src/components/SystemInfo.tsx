@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getCheckpoints, type CheckpointInfo } from "@/lib/api-client";
 
 /**
  * System Info panel: live host CPU / RAM / platform / torch readout.
@@ -13,6 +14,7 @@ import { useEffect, useState } from "react";
  */
 
 const POLL_INTERVAL_MS = 5000;
+const CKPT_POLL_INTERVAL_MS = 10_000;
 
 interface SystemInfoPayload {
   cpu_count?: number | null;
@@ -93,6 +95,7 @@ const SystemInfo = () => {
   const [info, setInfo] = useState<SystemInfoPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastFetchAt, setLastFetchAt] = useState<number | null>(null);
+  const [latestCkpt, setLatestCkpt] = useState<CheckpointInfo | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -114,6 +117,30 @@ const SystemInfo = () => {
     };
     void fetchOnce();
     const id = window.setInterval(fetchOnce, POLL_INTERVAL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
+
+  // Lower-cadence poll for the most-recent checkpoint. We sort by step
+  // (descending) and show the top entry so the user can see how far the
+  // last training session got. Failures degrade silently — the section
+  // simply renders an em-dash.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const list = await getCheckpoints();
+      if (!alive) return;
+      if (!Array.isArray(list) || list.length === 0) {
+        setLatestCkpt(null);
+        return;
+      }
+      const sorted = [...list].sort((a, b) => (b.step ?? 0) - (a.step ?? 0));
+      setLatestCkpt(sorted[0] ?? null);
+    };
+    void tick();
+    const id = window.setInterval(tick, CKPT_POLL_INTERVAL_MS);
     return () => {
       alive = false;
       window.clearInterval(id);
@@ -224,6 +251,36 @@ const SystemInfo = () => {
             <span>—</span>
           )}
         </div>
+      </section>
+
+      {/* Latest checkpoint */}
+      <section className="panel flex flex-col gap-0.5 p-2">
+        <div className="mb-1 text-[10px] uppercase tracking-widest text-kivski-muted">
+          Latest Checkpoint
+        </div>
+        {latestCkpt ? (
+          <>
+            <Row
+              label="Name"
+              value={latestCkpt.name}
+              title={latestCkpt.name}
+            />
+            <Row
+              label="Episodes"
+              value={String(latestCkpt.step ?? 0)}
+              title="trainer-reported episode count"
+            />
+            <Row
+              label="Created"
+              value={latestCkpt.createdAt || "—"}
+              title={latestCkpt.createdAt}
+            />
+          </>
+        ) : (
+          <div className="text-[11px] text-kivski-muted">
+            no checkpoint saved yet
+          </div>
+        )}
       </section>
 
       {/* Runtime / platform */}
