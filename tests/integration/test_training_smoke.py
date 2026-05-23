@@ -326,9 +326,7 @@ def test_threaded_vec_env_basic(tmp_path: Path) -> None:
         assert arr.shape == (4, ve.obs_dim)
     # Build dummy actions and step a handful of times.
     rng = np.random.default_rng(0)
-    actions = {
-        name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64) for name in ve.agent_names
-    }
+    actions = {name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64) for name in ve.agent_names}
     for _ in range(5):
         out = ve.step(actions)
         for arr in out.observations.values():
@@ -372,10 +370,7 @@ def test_subproc_vec_env_basic() -> None:
         for arr in step.observations.values():
             assert arr.shape == (4, ve.obs_dim)
         rng = np.random.default_rng(123)
-        actions = {
-            name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64)
-            for name in ve.agent_names
-        }
+        actions = {name: rng.integers(0, 2, size=(4, ve.n_heads)).astype(np.int64) for name in ve.agent_names}
         for _ in range(5):
             out = ve.step(actions)
             for arr in out.observations.values():
@@ -396,9 +391,7 @@ def test_subproc_vec_env_fallback_to_sync(monkeypatch) -> None:
     def _boom(*args, **kwargs):
         raise RuntimeError("simulated spawn failure")
 
-    monkeypatch.setattr(
-        "kivski_agents.training.parallel_vec_env.SubprocVecEnv.__init__", _boom, raising=True
-    )
+    monkeypatch.setattr("kivski_agents.training.parallel_vec_env.SubprocVecEnv.__init__", _boom, raising=True)
     ve = make_vec_env(num_envs=2, cfg=cfg, map_name="dustline", base_seed=7, kind="subproc")
     assert isinstance(ve, VecEnvWrapper), f"expected VecEnvWrapper fallback, got {type(ve)}"
     ve.close()

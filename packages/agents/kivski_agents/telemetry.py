@@ -620,6 +620,5 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
         return MultiSink(sinks)
 
     raise ValueError(
-        f"Unknown telemetry backend {backend!r}. "
-        f"Expected one of: csv, jsonl, tensorboard, wandb, all, none."
+        f"Unknown telemetry backend {backend!r}. Expected one of: csv, jsonl, tensorboard, wandb, all, none."
     )

@@ -204,7 +204,8 @@ async def _run(headless: bool = True) -> int:
         results["page_errors"] = page_errors
         # ignore api 404s for /api/training/configs that are tolerated (V1)
         non_tolerated = [
-            f for f in failed_responses
+            f
+            for f in failed_responses
             if not (f["url"].endswith("/api/training/configs") and f["status"] == 404)
         ]
         results["failed_responses"] = non_tolerated
@@ -215,7 +216,8 @@ async def _run(headless: bool = True) -> int:
             not console_errors
             and not page_errors
             and not non_tolerated
-            and results["stages"]["metrics"]["metric_frames"] + results["stages"]["metrics"]["status_frames"] > 0
+            and results["stages"]["metrics"]["metric_frames"] + results["stages"]["metrics"]["status_frames"]
+            > 0
         )
         results["ok"] = ok
         _record_results()

@@ -74,7 +74,9 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
-            _LOG.info("Kivski API shutting down -- stopping broadcaster + %d match(es)", len(REGISTRY.sessions))
+            _LOG.info(
+                "Kivski API shutting down -- stopping broadcaster + %d match(es)", len(REGISTRY.sessions)
+            )
             await broadcaster.stop()
             await REGISTRY.shutdown()
 
