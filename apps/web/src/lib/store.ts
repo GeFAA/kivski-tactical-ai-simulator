@@ -69,6 +69,27 @@ interface MatchState {
     yellow: PolicyAssignment | null;
     blue: PolicyAssignment | null;
   };
+  /**
+   * Per-side auto-reload flags echoed by the backend on
+   * ``/api/match/new``. When True the policy badge renders an extra
+   * "auto" suffix so the user can see at a glance that the side will
+   * hot-swap every round.
+   */
+  autoReload: {
+    yellow: boolean;
+    blue: boolean;
+  };
+  /**
+   * Most-recent ``policy_reload`` event for the transient toast. Set
+   * when the backend hot-swaps a side's checkpoint; the header reads
+   * ``ts`` to fade the badge after a couple of seconds.
+   */
+  lastPolicyReload: {
+    side: "yellow" | "blue";
+    name: string;
+    previous: string | null;
+    ts: number;
+  } | null;
 }
 
 export type RightTab = "events" | "inspector" | "comms" | "metrics" | "sys";
@@ -144,6 +165,23 @@ interface Actions {
       blue: PolicyAssignment | null;
     }>,
   ) => void;
+  /**
+   * Record the auto-reload flags reported by the backend on the most-
+   * recent ``/api/match/new`` response. Drives the "auto" suffix on
+   * the policy badges in the header.
+   */
+  setAutoReload: (p: Partial<{ yellow: boolean; blue: boolean }>) => void;
+  /**
+   * Record a ``policy_reload`` event from the backend. Updates
+   * ``currentPolicies`` for the affected side so the badge label
+   * reflects the new checkpoint immediately, and seeds
+   * ``lastPolicyReload`` for the transient toast.
+   */
+  pushPolicyReload: (e: {
+    side: "yellow" | "blue";
+    name: string;
+    previous?: string | null;
+  }) => void;
 
   // UI
   selectAgent: (id: string | null) => void;
@@ -187,6 +225,8 @@ const initialMatch: MatchState = {
   connected: false,
   currentMatchId: null,
   currentPolicies: { yellow: null, blue: null },
+  autoReload: { yellow: false, blue: false },
+  lastPolicyReload: null,
 };
 
 const initialUI: UIState = {
@@ -359,6 +399,33 @@ export const useStore = create<AppState>()(persist((set) => ({
         blue: p.blue === undefined ? s.currentPolicies.blue : p.blue,
       },
     })),
+
+  setAutoReload: (p) =>
+    set((s) => ({
+      autoReload: {
+        yellow: p.yellow === undefined ? s.autoReload.yellow : p.yellow,
+        blue: p.blue === undefined ? s.autoReload.blue : p.blue,
+      },
+    })),
+
+  pushPolicyReload: (e) =>
+    set((s) => {
+      const id = `checkpoint:${e.name}`;
+      const name = id; // mirrors the backend's ``policy_*_name`` convention
+      const nextPolicies = {
+        ...s.currentPolicies,
+        [e.side]: { id, name },
+      };
+      return {
+        currentPolicies: nextPolicies,
+        lastPolicyReload: {
+          side: e.side,
+          name: e.name,
+          previous: e.previous ?? null,
+          ts: Date.now(),
+        },
+      };
+    }),
 
   setAttentionWeights: (a) =>
     set((s) => {

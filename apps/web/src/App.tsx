@@ -23,6 +23,8 @@ const App = () => {
   const pushMetricsSample = useStore((s) => s.pushMetricsSample);
   const pushRoundResult = useStore((s) => s.pushRoundResult);
   const setCurrentPolicies = useStore((s) => s.setCurrentPolicies);
+  const setAutoReload = useStore((s) => s.setAutoReload);
+  const pushPolicyReload = useStore((s) => s.pushPolicyReload);
   // `matchToken` is incremented by `MatchSetupModal` after POSTing a new
   // comparison match — it forces this effect to re-run, which tears down
   // the current WebSocket and opens a fresh one against the new match.
@@ -35,6 +37,7 @@ const App = () => {
       onStatus: (status) => setConnected(status === "open"),
       onMatchId: (id) => setCurrentMatchId(id),
       onPolicies: (yellow, blue) => setCurrentPolicies({ yellow, blue }),
+      onAutoReload: (yellow, blue) => setAutoReload({ yellow, blue }),
       onFrame: (frame) => {
         switch (frame.type) {
           case "hello":
@@ -98,6 +101,25 @@ const App = () => {
 
             console.warn("[kivski] match_done:", frame.matchId ?? "(unknown id)");
             break;
+          case "policy_reload":
+            // Per-round auto-reload swapped one side's checkpoint;
+            // mirror the new label into `currentPolicies` and seed
+            // the transient toast.
+            pushPolicyReload({
+              side: frame.data.side,
+              name: frame.data.name,
+              previous: frame.data.previous ?? null,
+            });
+            // Surface as a generic info event too so it appears in the
+            // event feed alongside kills / plants / defuses.
+            pushEvent({
+              id: `policy-reload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              ts: Date.now(),
+              tick: 0,
+              kind: "info",
+              text: `${frame.data.side === "yellow" ? "Yellow" : "Blue"} hot-swapped to ${frame.data.name}`,
+            });
+            break;
           case "pong":
           case "ack":
             // Control acks aren't user-visible; nothing to do.
@@ -124,6 +146,8 @@ const App = () => {
     setTrainingStatus,
     pushMetricsSample,
     pushRoundResult,
+    pushPolicyReload,
+    setAutoReload,
   ]);
 
   return (

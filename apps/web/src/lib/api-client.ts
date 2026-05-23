@@ -450,6 +450,17 @@ export interface CreateMatchBody {
   policy_yellow?: string;
   policy_blue?: string;
   autostart?: boolean;
+  /**
+   * Per-side auto-reload of the trained-policy adapter. When the
+   * backend completes a round and a newer checkpoint shows up under
+   * ``models/checkpoints/*.pt``, it hot-swaps the policy and emits a
+   * ``policy_reload`` WS event so the viewer can update its UI. Only
+   * meaningful when the matching ``policy_*`` selects a checkpoint
+   * ("latest" / "best" / explicit path); the server silently
+   * normalises the flag to False for Random / Scripted policies.
+   */
+  auto_reload_yellow?: boolean;
+  auto_reload_blue?: boolean;
 }
 
 export interface CreateMatchResult {
@@ -466,6 +477,15 @@ export interface CreateMatchResult {
    */
   policy_yellow_name?: string | null;
   policy_blue_name?: string | null;
+  /**
+   * Effective auto-reload state per side. Mirrors the request body but
+   * normalised by the server: requesting auto-reload on a Random or
+   * Scripted side returns False here even when the body asked for True.
+   * Optional for backwards compat with older backends (treat undefined
+   * as False).
+   */
+  auto_reload_yellow?: boolean;
+  auto_reload_blue?: boolean;
   paused?: boolean;
 }
 
@@ -543,6 +563,13 @@ export interface SubscribeOpts {
    * display which policies are currently being compared.
    */
   onPolicies?: (yellow: PolicyAssignment | null, blue: PolicyAssignment | null) => void;
+  /**
+   * Notified whenever the create-match handshake completes with the
+   * server's *effective* auto-reload flags. Mirrors what the user
+   * requested via `createMatch(body)` but normalised by the backend
+   * (a request to auto-reload a Random side comes back as False).
+   */
+  onAutoReload?: (yellow: boolean, blue: boolean) => void;
   /** Initial reconnect delay in ms. Doubles per attempt up to 15s cap. */
   baseDelayMs?: number;
 }
@@ -674,6 +701,29 @@ function adaptIncomingFrame(parsed: unknown, mapName: string): WSFrame[] {
       };
       return [{ type: "metrics_sample", data: sample }];
     }
+    case "policy_reload": {
+      // Hot-swap notification from the backend's per-round auto-reload.
+      // Normalise the side field to the closed enum the frontend uses
+      // and drop the frame if it's malformed (the rest of the pipeline
+      // expects `side` to be 'yellow' | 'blue').
+      const data = (obj.data ?? {}) as Record<string, unknown>;
+      const side = data.side === "yellow" || data.side === "blue" ? data.side : null;
+      const name = typeof data.name === "string" ? data.name : null;
+      if (side === null || name === null) return [];
+      const path = typeof data.path === "string" ? data.path : undefined;
+      const previous =
+        typeof data.previous === "string"
+          ? data.previous
+          : data.previous === null
+            ? null
+            : undefined;
+      return [
+        {
+          type: "policy_reload",
+          data: { side, name, path, previous },
+        },
+      ];
+    }
     case "event":
     case "message":
     case "inspect":
@@ -757,6 +807,12 @@ export function subscribeMatch(opts: SubscribeOpts): WSHandle {
       const yellowPolicy = packPolicy(res.policy_yellow, res.policy_yellow_name);
       const bluePolicy = packPolicy(res.policy_blue, res.policy_blue_name);
       opts.onPolicies?.(yellowPolicy, bluePolicy);
+      // v0.6+: echo the per-side auto-reload state. Older backends omit
+      // the fields → treat as off.
+      opts.onAutoReload?.(
+        Boolean(res.auto_reload_yellow),
+        Boolean(res.auto_reload_blue),
+      );
 
       console.warn("[kivski] created match", matchId, "on", mapName);
       return matchId;

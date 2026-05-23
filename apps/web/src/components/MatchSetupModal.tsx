@@ -36,13 +36,42 @@ interface MatchSetupModalProps {
  */
 const AUTO_VALUE = "__auto__";
 
+/**
+ * Decide whether the auto-reload toggle is meaningful for a given
+ * policy selection. We allow it when:
+ *   - the user picked AUTO (server resolves to "latest" when a ckpt
+ *     exists), or
+ *   - the user explicitly picked the "latest" or "best" id, or
+ *   - the option's kind is "checkpoint" (named snapshot).
+ * Random / scripted baselines have nothing to reload, so the checkbox
+ * stays disabled and unchecked.
+ */
+const supportsAutoReload = (
+  selectedId: string,
+  options: readonly PolicyOption[],
+): boolean => {
+  if (selectedId === AUTO_VALUE) return true;
+  const lowered = selectedId.toLowerCase();
+  if (lowered === "latest" || lowered === "best") return true;
+  const opt = options.find((o) => o.id === selectedId) as
+    | (PolicyOption & { kind?: string })
+    | undefined;
+  if (opt && typeof opt.kind === "string" && opt.kind === "checkpoint") {
+    return true;
+  }
+  return false;
+};
+
 const MatchSetupModal = ({ open, onClose }: MatchSetupModalProps) => {
   const setMatchToken = useStore((s) => s.setMatchToken);
   const setCurrentPolicies = useStore((s) => s.setCurrentPolicies);
+  const setAutoReload = useStore((s) => s.setAutoReload);
 
   const [options, setOptions] = useState<PolicyOption[]>([]);
   const [yellow, setYellow] = useState<string>(AUTO_VALUE);
   const [blue, setBlue] = useState<string>(AUTO_VALUE);
+  const [autoReloadYellow, setAutoReloadYellow] = useState<boolean>(true);
+  const [autoReloadBlue, setAutoReloadBlue] = useState<boolean>(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -89,12 +118,25 @@ const MatchSetupModal = ({ open, onClose }: MatchSetupModalProps) => {
     return options.find((o) => o.id === id) ?? { id, name: id };
   };
 
+  const yellowSupportsReload = supportsAutoReload(yellow, options);
+  const blueSupportsReload = supportsAutoReload(blue, options);
+
   const onStart = async () => {
     setBusy(true);
     setError(null);
-    const body: { policy_yellow?: string; policy_blue?: string } = {};
+    const body: {
+      policy_yellow?: string;
+      policy_blue?: string;
+      auto_reload_yellow?: boolean;
+      auto_reload_blue?: boolean;
+    } = {};
     if (yellow !== AUTO_VALUE) body.policy_yellow = yellow;
     if (blue !== AUTO_VALUE) body.policy_blue = blue;
+    // Only forward auto_reload=true when the selected policy can
+    // actually use it; otherwise the backend would normalise it back
+    // to false and the request would be misleading.
+    if (yellowSupportsReload && autoReloadYellow) body.auto_reload_yellow = true;
+    if (blueSupportsReload && autoReloadBlue) body.auto_reload_blue = true;
     try {
       const result = await createMatch(body);
       // Optimistically mirror what the user selected; the WS handshake
@@ -111,6 +153,12 @@ const MatchSetupModal = ({ open, onClose }: MatchSetupModalProps) => {
           result.policy_blue_name && result.policy_blue
             ? { id: result.policy_blue, name: result.policy_blue_name }
             : bOpt,
+      });
+      // Mirror the *effective* auto-reload flags from the server so
+      // the header badge knows whether to render the "auto" suffix.
+      setAutoReload({
+        yellow: Boolean(result.auto_reload_yellow),
+        blue: Boolean(result.auto_reload_blue),
       });
       // Bump the match token to trigger App.tsx's WS effect to
       // re-subscribe against the new match id.
@@ -174,6 +222,27 @@ const MatchSetupModal = ({ open, onClose }: MatchSetupModalProps) => {
                 </option>
               ))}
             </select>
+            <label
+              className={`flex items-center gap-1.5 pt-1 text-[10px] ${
+                yellowSupportsReload
+                  ? "cursor-pointer text-kivski-text"
+                  : "cursor-not-allowed text-kivski-muted/60"
+              }`}
+              title={
+                yellowSupportsReload
+                  ? "Hot-swap the policy to the newest checkpoint at the end of every round"
+                  : "Only available for trained-checkpoint policies"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={yellowSupportsReload && autoReloadYellow}
+                onChange={(e) => setAutoReloadYellow(e.target.checked)}
+                disabled={!yellowSupportsReload || loading || busy}
+                className="accent-kivski-attacker"
+              />
+              <span>Auto-reload latest each round</span>
+            </label>
           </div>
 
           {/* Blue */}
@@ -195,6 +264,27 @@ const MatchSetupModal = ({ open, onClose }: MatchSetupModalProps) => {
                 </option>
               ))}
             </select>
+            <label
+              className={`flex items-center gap-1.5 pt-1 text-[10px] ${
+                blueSupportsReload
+                  ? "cursor-pointer text-kivski-text"
+                  : "cursor-not-allowed text-kivski-muted/60"
+              }`}
+              title={
+                blueSupportsReload
+                  ? "Hot-swap the policy to the newest checkpoint at the end of every round"
+                  : "Only available for trained-checkpoint policies"
+              }
+            >
+              <input
+                type="checkbox"
+                checked={blueSupportsReload && autoReloadBlue}
+                onChange={(e) => setAutoReloadBlue(e.target.checked)}
+                disabled={!blueSupportsReload || loading || busy}
+                className="accent-kivski-defender"
+              />
+              <span>Auto-reload latest each round</span>
+            </label>
           </div>
         </div>
 

@@ -311,6 +311,25 @@ export interface MapInfoFrame {
   tickRate?: number;
 }
 
+/**
+ * Per-side policy hot-swap notification. Emitted by the backend at the
+ * end of a round when ``auto_reload_yellow`` / ``auto_reload_blue`` was
+ * requested on ``/api/match/new`` *and* a newer checkpoint has appeared
+ * on disk since the side's adapter was last (re)loaded.
+ *
+ * The viewer uses this to flash a transient toast in the policy badge
+ * area so the user can see live which snapshot drives each team.
+ */
+export interface PolicyReloadFrame {
+  side: "yellow" | "blue";
+  /** Stem of the freshly-loaded checkpoint file (e.g. "snapshot_ep_500"). */
+  name: string;
+  /** Absolute path to the new checkpoint on the backend host. */
+  path?: string;
+  /** Adapter name in use *before* the swap (best-effort, may be null). */
+  previous?: string | null;
+}
+
 export type WSFrame =
   | { type: "snapshot"; data: MatchSnapshot }
   | { type: "event"; data: EventItem }
@@ -333,6 +352,8 @@ export type WSFrame =
   | { type: "pong"; ts: number }
   /** Generic acknowledgement of a control command. */
   | { type: "ack"; for: string; [k: string]: unknown }
+  /** Sent after a per-round auto-reload hot-swaps a side's policy adapter. */
+  | { type: "policy_reload"; data: PolicyReloadFrame }
   | { type: "error"; data: { message: string } };
 
 // ---------- Map data ----------

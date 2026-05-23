@@ -24,6 +24,20 @@ class NewMatchBody(BaseModel):
         default=True,
         description="Begin the tick loop immediately; otherwise it stays paused until /resume.",
     )
+    auto_reload_yellow: bool = Field(
+        default=False,
+        description=(
+            "When True the live loop scans for a newer checkpoint at each "
+            "round-end and hot-swaps yellow's policy in place. Silently "
+            "ignored when policy_yellow is not checkpoint-backed."
+        ),
+    )
+    auto_reload_blue: bool = Field(
+        default=False,
+        description=(
+            "Same as auto_reload_yellow but for the blue team."
+        ),
+    )
 
 
 def _require_session(match_id: str) -> Any:
@@ -43,6 +57,8 @@ async def new_match(body: NewMatchBody) -> dict[str, Any]:
             config_path=body.config,
             policy_yellow=body.policy_yellow,
             policy_blue=body.policy_blue,
+            auto_reload_yellow=body.auto_reload_yellow,
+            auto_reload_blue=body.auto_reload_blue,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -63,6 +79,12 @@ async def new_match(body: NewMatchBody) -> dict[str, Any]:
         "policy_blue": body.policy_blue,
         "policy_yellow_name": session.policy_yellow_name,
         "policy_blue_name": session.policy_blue_name,
+        # Echo the effective auto-reload flags. These may differ from the
+        # request body when the user asked for auto-reload on a side that
+        # isn't checkpoint-backed -- the server normalises that to False so
+        # the frontend can render the indicator with full confidence.
+        "auto_reload_yellow": session.auto_reload_yellow,
+        "auto_reload_blue": session.auto_reload_blue,
         "paused": session.paused,
     }
 
@@ -110,6 +132,8 @@ async def get_snapshot(match_id: str) -> dict[str, Any]:
         "selected_agent": session.selected_agent,
         "policy_yellow_name": session.policy_yellow_name,
         "policy_blue_name": session.policy_blue_name,
+        "auto_reload_yellow": session.auto_reload_yellow,
+        "auto_reload_blue": session.auto_reload_blue,
         "data": session.engine.snapshot().to_json_dict(),
     }
 

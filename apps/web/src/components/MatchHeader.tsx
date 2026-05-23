@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useStore } from "@/lib/store";
 import type { PolicyAssignment } from "@/lib/store";
 
@@ -60,14 +61,27 @@ const classifyPolicy = (p: PolicyAssignment | null): PolicyKind => {
   return "trained";
 };
 
+/**
+ * Window (ms) during which a recent `policy_reload` event drives the
+ * badge "flash" highlight. Long enough that a user glancing at the
+ * header during a round-end transition will see the change.
+ */
+const RELOAD_FLASH_MS = 3000;
+
 const PolicyBadge = ({
   policy,
   teamLabel,
   teamColor,
+  autoReload,
+  recentReload,
 }: {
   policy: PolicyAssignment | null;
   teamLabel: string;
   teamColor: string;
+  /** Server-confirmed auto-reload flag for this side. */
+  autoReload: boolean;
+  /** True while a `policy_reload` for this side is within the flash window. */
+  recentReload: boolean;
 }) => {
   const kind = classifyPolicy(policy);
   const tooltip = policy?.name ?? policy?.id ?? "policy unknown";
@@ -89,10 +103,14 @@ const PolicyBadge = ({
     kindClass = "bg-kivski-defender/15 text-kivski-defender";
   }
 
+  const tooltipExtra = autoReload ? " (auto-reload each round)" : "";
+
   return (
     <span
-      className="inline-flex items-center gap-1 text-[10px]"
-      title={`${teamLabel}: ${tooltip} (${kindLabel})`}
+      className={`inline-flex items-center gap-1 text-[10px] transition-colors ${
+        recentReload ? "rounded bg-kivski-hp/15 px-1 py-px" : ""
+      }`}
+      title={`${teamLabel}: ${tooltip} (${kindLabel})${tooltipExtra}`}
     >
       <span
         className="inline-block h-1.5 w-1.5 rounded-full"
@@ -105,8 +123,37 @@ const PolicyBadge = ({
       <span className="stat max-w-[10rem] truncate text-kivski-text">
         {policy?.name ?? "auto"}
       </span>
+      {autoReload ? (
+        <span
+          className="stat rounded bg-kivski-hp/20 px-1 py-px text-[9px] text-kivski-hp"
+          title="Will hot-swap to the newest checkpoint each round"
+        >
+          auto
+        </span>
+      ) : null}
     </span>
   );
+};
+
+/**
+ * Hook that returns the side whose policy was just reloaded, or null
+ * once the flash window has elapsed. Re-runs whenever a new
+ * `policy_reload` event arrives so back-to-back swaps both flash.
+ */
+const useRecentReloadSide = (): "yellow" | "blue" | null => {
+  const last = useStore((s) => s.lastPolicyReload);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (last === null) return undefined;
+    setNow(Date.now());
+    const remaining = last.ts + RELOAD_FLASH_MS - Date.now();
+    if (remaining <= 0) return undefined;
+    const handle = window.setTimeout(() => setNow(Date.now()), remaining);
+    return () => window.clearTimeout(handle);
+  }, [last]);
+  if (last === null) return null;
+  if (now - last.ts >= RELOAD_FLASH_MS) return null;
+  return last.side;
 };
 
 /**
@@ -178,6 +225,9 @@ const MatchHeader = () => {
   const connected = useStore((s) => s.connected);
   const tick = useStore((s) => s.tick);
   const policies = useStore((s) => s.currentPolicies);
+  const autoReload = useStore((s) => s.autoReload);
+  const lastReload = useStore((s) => s.lastPolicyReload);
+  const recentReloadSide = useRecentReloadSide();
 
   return (
     <header className="flex flex-col border-b border-kivski-border bg-kivski-panel">
@@ -252,12 +302,28 @@ const MatchHeader = () => {
           policy={policies.yellow}
           teamLabel="Yellow"
           teamColor="#FFC833"
+          autoReload={autoReload.yellow}
+          recentReload={recentReloadSide === "yellow"}
         />
         <PolicyBadge
           policy={policies.blue}
           teamLabel="Blue"
           teamColor="#4DA8FF"
+          autoReload={autoReload.blue}
+          recentReload={recentReloadSide === "blue"}
         />
+        {recentReloadSide !== null && lastReload !== null ? (
+          <span
+            className="ml-auto inline-flex items-center gap-1 rounded bg-kivski-hp/10 px-2 py-px text-[10px] text-kivski-hp"
+            title={`Auto-reload swapped ${recentReloadSide} to ${lastReload.name}`}
+          >
+            <span>auto-reload</span>
+            <span className="stat text-kivski-text">
+              {recentReloadSide === "yellow" ? "Yellow" : "Blue"}{" "}
+              {String.fromCharCode(8594)} {lastReload.name}
+            </span>
+          </span>
+        ) : null}
       </div>
     </header>
   );

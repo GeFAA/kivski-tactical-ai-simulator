@@ -39,6 +39,7 @@ from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame, ReplayHeader,
 from kivski_sim.utils import now_unix
 
 from kivski_api.policies import (
+    CheckpointPolicy,
     PolicyAdapter,
     RandomPolicy,
     latest_checkpoint_path,
@@ -198,12 +199,35 @@ class MatchSession:
     # the live header can render e.g. "Yellow: checkpoint:main_ep_12000".
     policy_yellow_name: str | None = None
     policy_blue_name: str | None = None
+    # Auto-reload: when True the run-loop scans for a newer checkpoint at
+    # every round-end and hot-swaps the side's adapter in place. The flag
+    # is requested by the /api/match/new caller and is only meaningful when
+    # the side was originally bound to a checkpoint-style policy
+    # ("latest" / "best" / explicit path); a side running RandomPolicy or
+    # ScriptedPolicy is left untouched even if the flag is True. Persisted
+    # on the dataclass so the WS endpoint can surface it for the UI badge.
+    auto_reload_yellow: bool = False
+    auto_reload_blue: bool = False
+    # Filesystem path of the checkpoint currently loaded into each side.
+    # Used to short-circuit the hot-swap when the on-disk "latest" has
+    # not actually changed since we last looked, so a quiet trainer (no
+    # new ckpts being written) doesn't trigger wasteful reloads. Set the
+    # first time a CheckpointPolicy is wired in for the side.
+    _loaded_policy_path_yellow: str | None = None
+    _loaded_policy_path_blue: str | None = None
     selected_agent: int | None = None
     created_at: float = field(default_factory=now_unix)
     last_tick_at: float = 0.0
     _task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     _broadcast_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Last engine round_id seen by the loop. Used to detect the
+    # round-end -> next-round transition (the engine increments
+    # round_id inside _finish_round, so a change between two
+    # consecutive ticks is the unambiguous "a round just ended" signal).
+    # Initialised to -1 so the very first observed round (0) doesn't
+    # trigger a spurious auto-reload before the first round even runs.
+    _last_round_id: int = -1
     # Auto-save: every live match streams its event frames (round_start,
     # plant, defuse, kill, round_end) into a replay file under
     # ``models/replays/match-<id>-<timestamp>.replay``. The writer is
@@ -380,6 +404,10 @@ class MatchSession:
             # Emit an initial snapshot so newly-connected clients render at
             # least one frame even when paused.
             await self._broadcast_snapshot()
+            # Sync the round-tracker to whatever round the engine is sitting
+            # in *right now* so the very first step we take doesn't look
+            # like a round-end transition.
+            self._last_round_id = int(getattr(self.engine.state, "round_id", 0) or 0)
 
             while not self._stop_event.is_set():
                 dt = self._effective_dt()
@@ -421,6 +449,26 @@ class MatchSession:
 
                 await self._broadcast_snapshot()
 
+                # Round-end detection: the engine increments round_id
+                # inside _finish_round, so a delta between two consecutive
+                # steps means a round just finished. Trigger auto-reload
+                # here *after* the snapshot has been broadcast so any
+                # round_end-shaped client logic (e.g. the timeline pie)
+                # sees the final state before we announce a policy swap.
+                new_round_id = int(getattr(self.engine.state, "round_id", 0) or 0)
+                if new_round_id != self._last_round_id:
+                    self._last_round_id = new_round_id
+                    # Best-effort: a failing hot-swap must not pause the
+                    # match. _maybe_hot_swap_policy already swallows its
+                    # own errors; the broad try here is belt-and-braces.
+                    try:
+                        await self._maybe_hot_swap_policy("yellow")
+                        await self._maybe_hot_swap_policy("blue")
+                    except Exception:
+                        _LOG.exception(
+                            "Match %s auto-reload raised unexpectedly", self.id
+                        )
+
                 if done:
                     await self._broadcast_event({"type": "match_done", "match_id": self.id})
                     _LOG.info("Match %s finished, loop exiting", self.id)
@@ -433,6 +481,75 @@ class MatchSession:
         finally:
             self._close_replay_writer()
             _LOG.info("Match %s loop stopped", self.id)
+
+    # ------------------------------------------------------------------
+    # Auto-reload (hot-swap latest checkpoint at round-end)
+    # ------------------------------------------------------------------
+
+    async def _maybe_hot_swap_policy(self, side: str) -> bool:
+        """If auto-reload is on for ``side`` and a newer checkpoint exists,
+        swap in a fresh :class:`CheckpointPolicy` and emit a
+        ``policy_reload`` event for any WS subscribers.
+
+        Returns ``True`` when an actual swap happened, ``False`` otherwise
+        (auto-reload disabled, no checkpoint on disk, or the on-disk
+        latest is the very file we already have loaded). All failure
+        modes are swallowed and logged -- the live match must never
+        crash because a half-written checkpoint failed to load.
+        """
+        if side not in ("yellow", "blue"):
+            return False
+        if not getattr(self, f"auto_reload_{side}", False):
+            return False
+
+        newest = latest_checkpoint_path()
+        if newest is None:
+            return False
+
+        current_path = getattr(self, f"_loaded_policy_path_{side}", None)
+        if current_path is not None and str(newest) == current_path:
+            return False
+
+        try:
+            new_policy: PolicyAdapter = CheckpointPolicy(newest)
+        except Exception as exc:  # pragma: no cover -- defensive
+            _LOG.warning("auto-reload failed for %s: %s", side, exc)
+            return False
+
+        old = getattr(self, f"policy_{side}")
+        old_name = getattr(old, "name", None) if old is not None else None
+        setattr(self, f"policy_{side}", new_policy)
+        setattr(self, f"_loaded_policy_path_{side}", str(newest))
+        setattr(self, f"policy_{side}_name", f"checkpoint:{newest.stem}")
+        # Best-effort: let the new adapter free any old recurrent state
+        # before we use it.
+        with contextlib.suppress(Exception):
+            new_policy.reset()
+        # And release any held resources on the old adapter.
+        if old is not None:
+            with contextlib.suppress(Exception):
+                old.close()
+
+        _LOG.info(
+            "Match %s hot-swapped %s policy to %s (was %s)",
+            self.id,
+            side,
+            newest.name,
+            old_name,
+        )
+        await self._broadcast_event(
+            {
+                "type": "policy_reload",
+                "match_id": self.id,
+                "data": {
+                    "side": side,
+                    "name": newest.stem,
+                    "path": str(newest),
+                    "previous": old_name,
+                },
+            }
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Broadcast helpers
@@ -539,6 +656,8 @@ class SessionRegistry:
         config_path: str | None = None,
         policy_yellow: str | None = None,
         policy_blue: str | None = None,
+        auto_reload_yellow: bool = False,
+        auto_reload_blue: bool = False,
     ) -> MatchSession:
         cfg = load_config(config_path) if config_path else load_config()
         map_data = load_map(map_name)
@@ -568,6 +687,25 @@ class SessionRegistry:
         adapter_y = load_policy(yellow_spec)
         adapter_b = load_policy(blue_spec)
 
+        # Auto-reload only makes sense for checkpoint-driven sides. A side
+        # bound to RandomPolicy or one of the scripted baselines has no
+        # checkpoint to swap *to*, so silently dropping the flag avoids
+        # firing pointless reloads (the helper would no-op anyway, but
+        # surfacing the request as actually-on in the API response would
+        # mislead the UI).
+        eff_auto_y = bool(auto_reload_yellow) and isinstance(adapter_y, CheckpointPolicy)
+        eff_auto_b = bool(auto_reload_blue) and isinstance(adapter_b, CheckpointPolicy)
+        if auto_reload_yellow and not eff_auto_y:
+            _LOG.info(
+                "create_match: ignoring auto_reload_yellow (policy_yellow=%r is not checkpoint-backed)",
+                yellow_spec,
+            )
+        if auto_reload_blue and not eff_auto_b:
+            _LOG.info(
+                "create_match: ignoring auto_reload_blue (policy_blue=%r is not checkpoint-backed)",
+                blue_spec,
+            )
+
         session = MatchSession(
             id=match_id,
             engine=engine,
@@ -577,15 +715,26 @@ class SessionRegistry:
             policy_blue=adapter_b,
             policy_yellow_name=str(getattr(adapter_y, "name", yellow_spec or "random")),
             policy_blue_name=str(getattr(adapter_b, "name", blue_spec or "random")),
+            auto_reload_yellow=eff_auto_y,
+            auto_reload_blue=eff_auto_b,
         )
+        # Seed the loaded-path tracker for any CheckpointPolicy we just
+        # wired in so the very first round-end doesn't re-load the same
+        # file we already have.
+        if isinstance(adapter_y, CheckpointPolicy):
+            session._loaded_policy_path_yellow = str(adapter_y.path)
+        if isinstance(adapter_b, CheckpointPolicy):
+            session._loaded_policy_path_blue = str(adapter_b.path)
         self.sessions[match_id] = session
         _LOG.info(
-            "Created match %s (map=%s, seed=%s, yellow=%s, blue=%s)",
+            "Created match %s (map=%s, seed=%s, yellow=%s, blue=%s, auto_reload=Y:%s/B:%s)",
             match_id,
             map_name,
             seed,
             session.policy_yellow_name,
             session.policy_blue_name,
+            eff_auto_y,
+            eff_auto_b,
         )
         return session
 
