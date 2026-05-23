@@ -603,10 +603,9 @@ class Trainer:
         if not self.reward_curriculum.enabled:
             return
         state = self.reward_curriculum.state
-        try:
+        # Never fatal: a single failed propagate must not kill the trainer loop.
+        with contextlib.suppress(Exception):
             self.vec_env.set_curriculum_stage(state.stage_name, list(state.features))
-        except Exception:  # noqa: BLE001 - never fatal
-            pass
         # Also log so the user can see the flip in the metrics jsonl.
         with contextlib.suppress(Exception):
             self.telemetry.log_dict(

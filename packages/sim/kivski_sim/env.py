@@ -448,9 +448,7 @@ class KivskiParallelEnv(ParallelEnv):
             # JSON-serialisable agent/event/message lists in the engine's
             # return value -- the env wrapper reads engine.state directly so
             # those fields are pure overhead during training.
-            snap, engine_rewards, _engine_done = self._engine.step(
-                engine_actions, light_snapshot=True
-            )
+            snap, engine_rewards, _engine_done = self._engine.step(engine_actions, light_snapshot=True)
 
             # 4) Update the per-agent memory using the post-step snapshot.
             self._update_memory(snap)
@@ -1088,10 +1086,7 @@ class KivskiParallelEnv(ParallelEnv):
                 mem = self._memory[name]
                 mem.last_death_tick = int(self._engine.state.tick)
                 # Pointless death: died without dealing any damage in the round.
-                if (
-                    float(pre["damage_done_round"]) <= 0.0
-                    and self._feature_enabled("pointless_death")
-                ):
+                if float(pre["damage_done_round"]) <= 0.0 and self._feature_enabled("pointless_death"):
                     shaping += float(rs.pointless_death)
             # Kill bookkeeping (alive agents that increased kill count).
             if a.alive:

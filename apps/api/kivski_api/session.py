@@ -38,7 +38,6 @@ from kivski_api.policies import (
     PolicyAdapter,
     RandomPolicy,
     latest_checkpoint_path,
-    load_latest_checkpoint_policy,
     load_policy,
 )
 
@@ -389,9 +388,7 @@ class SessionRegistry:
                 default_spec: str | None = "latest"
             else:
                 default_spec = "random"
-                _LOG.warning(
-                    "create_match: no checkpoint available, defaulting both sides to random"
-                )
+                _LOG.warning("create_match: no checkpoint available, defaulting both sides to random")
             yellow_spec = default_spec
             blue_spec = default_spec
         else:

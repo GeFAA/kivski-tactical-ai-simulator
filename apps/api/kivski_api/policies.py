@@ -294,10 +294,7 @@ class ScriptedPolicy(PolicyAdapter):
             if self._sprint_bias:
                 # Rush: move forward most ticks, occasional INTERACT to plant.
                 move = MoveIntent(int(self._rng.integers(1, len(MoveIntent))))
-                if float(self._rng.random()) < 0.08:
-                    micro = MicroAction.INTERACT
-                else:
-                    micro = MicroAction.SPRINT
+                micro = MicroAction.INTERACT if float(self._rng.random()) < 0.08 else MicroAction.SPRINT
                 comm = CommAction.SUGGEST_ATTACK if self._rng.random() < 0.02 else CommAction.NONE
                 buy = BuyChoice.SMG if self._rng.random() < 0.02 else BuyChoice.NONE
             else:
@@ -306,10 +303,7 @@ class ScriptedPolicy(PolicyAdapter):
                     move = MoveIntent(int(self._rng.integers(0, len(MoveIntent))))
                 else:
                     move = MoveIntent.HOLD
-                if float(self._rng.random()) < 0.06:
-                    micro = MicroAction.INTERACT
-                else:
-                    micro = MicroAction.CROUCH_HOLD
+                micro = MicroAction.INTERACT if float(self._rng.random()) < 0.06 else MicroAction.CROUCH_HOLD
                 comm = CommAction.SUGGEST_FALLBACK if self._rng.random() < 0.02 else CommAction.NONE
                 buy = BuyChoice.HEAVY_PISTOL if self._rng.random() < 0.02 else BuyChoice.NONE
             out[int(agent_id)] = ActionBundle(

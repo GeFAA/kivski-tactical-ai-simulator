@@ -333,9 +333,7 @@ class VecEnvWrapper:
     # Reward curriculum (broadcasts to every wrapped env)
     # ------------------------------------------------------------------
 
-    def set_curriculum_stage(
-        self, stage_name: str, features: list[str] | None
-    ) -> None:
+    def set_curriculum_stage(self, stage_name: str, features: list[str] | None) -> None:
         """Forward a reward-curriculum stage flip to every wrapped env."""
         for env in self.envs:
             with contextlib.suppress(Exception):

@@ -336,9 +336,7 @@ class ThreadedVecEnv:
     # Reward curriculum (broadcasts to every wrapped env)
     # ------------------------------------------------------------------
 
-    def set_curriculum_stage(
-        self, stage_name: str, features: list[str] | None
-    ) -> None:
+    def set_curriculum_stage(self, stage_name: str, features: list[str] | None) -> None:
         for env in self.envs:
             with contextlib.suppress(Exception):
                 env.set_curriculum_stage(stage_name, features)
@@ -534,10 +532,9 @@ def _subproc_worker_loop(
             elif cmd == "set_curriculum_stage":
                 stage_name, features = payload
                 for env in envs:
-                    try:
+                    # Never let one env kill the loop.
+                    with contextlib.suppress(Exception):
                         env.set_curriculum_stage(stage_name, features)
-                    except Exception:  # noqa: BLE001 - never let one env kill the loop
-                        pass
                 remote.send(("set_curriculum_stage_ok", True))
             elif cmd == "close":
                 break
@@ -914,9 +911,7 @@ class SubprocVecEnv:
     # Reward curriculum (broadcasts to every worker + the anchor env)
     # ------------------------------------------------------------------
 
-    def set_curriculum_stage(
-        self, stage_name: str, features: list[str] | None
-    ) -> None:
+    def set_curriculum_stage(self, stage_name: str, features: list[str] | None) -> None:
         if self._closed:
             return
         # Update the anchor env (used for one-off ``render`` calls).

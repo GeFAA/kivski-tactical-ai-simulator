@@ -28,7 +28,6 @@ from kivski_api.policies import (
     load_policy,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -56,6 +55,7 @@ def populated_ckpt_dir(monkeypatch, tmp_path: Path) -> Path:
     newer.write_bytes(b"new")
     # Force a deterministic mtime order so "latest" picks ``newer``.
     import os
+
     os.utime(older, (1_700_000_000, 1_700_000_000))
     os.utime(newer, (1_700_000_100, 1_700_000_100))
     monkeypatch.setattr(pol, "checkpoints_dir", lambda: root)

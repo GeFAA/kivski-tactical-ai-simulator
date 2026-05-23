@@ -323,9 +323,7 @@ def test_env_frame_skip(small_cfg: KivskiConfig) -> None:
 def test_env_frame_skip_default_one(small_cfg: KivskiConfig) -> None:
     """Default frame_skip is 1 unless overridden -- live viewer compatibility."""
     map_data = load_map("dustline")
-    env_default = KivskiParallelEnv(
-        config=small_cfg, map_name="dustline", seed=11, map_data=map_data
-    )
+    env_default = KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=11, map_data=map_data)
     env_default.reset(seed=11)
     assert env_default.frame_skip == int(getattr(small_cfg.simulation, "frame_skip", 1) or 1)
 
@@ -348,7 +346,7 @@ def test_env_frame_skip_rewards_accumulate(small_cfg: KivskiConfig) -> None:
 
     actions = _hold_actions(env_skip)
     _, rewards_skip, _, _, _ = env_skip.step(actions)
-    sum_default = {name: 0.0 for name in env_default.possible_agents}
+    sum_default = dict.fromkeys(env_default.possible_agents, 0.0)
     for _ in range(3):
         _, r_step, _, _, _ = env_default.step(actions)
         for name, r in r_step.items():
