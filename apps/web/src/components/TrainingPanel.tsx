@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import {
   getCheckpoints,
@@ -11,14 +11,16 @@ import {
 
 /**
  * Training-specific control deck. Lives below BottomControls (or
- * inlined into it). Polls `/api/training/status` every 2s while the
- * trainer is running so the agent worker doesn't have to push a
- * dedicated WS frame on every change.
+ * inlined into it). Reacts to the WebSocket-pushed `training_status` /
+ * `metrics_sample` frames maintained by the backend's
+ * :class:`MetricsBroadcaster`. The /api/training/status REST endpoint is
+ * still polled at low cadence as a fallback for the `running` flag in
+ * case the broadcaster's stream is interrupted.
  *
  * Visualises live policy/value/entropy with tiny inline sparklines.
  */
 
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 5000;
 const SPARK_WINDOW = 60; // last N samples
 
 // ---------- Sparkline ----------
@@ -97,10 +99,34 @@ const TrainingPanel = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Sparkline buffers. Plain refs so we don't trigger re-renders on push.
-  const policyBuf = useRef<number[]>([]);
-  const valueBuf = useRef<number[]>([]);
-  const entropyBuf = useRef<number[]>([]);
+  // Sparkline buffers. Plain state so React re-renders whenever a new
+  // WS-pushed training_status arrives — using refs here would silently
+  // pin the sparkline to its first sample.
+  const [policyBuf, setPolicyBuf] = useState<number[]>([]);
+  const [valueBuf, setValueBuf] = useState<number[]>([]);
+  const [entropyBuf, setEntropyBuf] = useState<number[]>([]);
+
+  // Append every fresh WS-pushed training_status into the sparkline buffers.
+  useEffect(() => {
+    if (typeof trainingStatus.policyLoss === "number") {
+      setPolicyBuf((prev) => {
+        const next = [...prev, trainingStatus.policyLoss as number];
+        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
+      });
+    }
+    if (typeof trainingStatus.valueLoss === "number") {
+      setValueBuf((prev) => {
+        const next = [...prev, trainingStatus.valueLoss as number];
+        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
+      });
+    }
+    if (typeof trainingStatus.entropy === "number") {
+      setEntropyBuf((prev) => {
+        const next = [...prev, trainingStatus.entropy as number];
+        return next.length > SPARK_WINDOW ? next.slice(-SPARK_WINDOW) : next;
+      });
+    }
+  }, [trainingStatus.policyLoss, trainingStatus.valueLoss, trainingStatus.entropy]);
 
   // Initial config + checkpoint fetch.
   useEffect(() => {
@@ -125,23 +151,21 @@ const TrainingPanel = () => {
     };
   }, []);
 
-  // Poll training status while the loop is running.
+  // Low-frequency fallback poll for the running flag. The bulk of live
+  // updates (loss / entropy / episode counters) arrives via the WS
+  // `training_status` frame published by the MetricsBroadcaster.
   useEffect(() => {
-    if (!trainingStatus.running) return;
     let alive = true;
     const tick = async () => {
       const s = await getTrainingStatus();
       if (!alive || !s) return;
-      setTrainingStatus(s);
-      if (typeof s.policyLoss === "number") {
-        policyBuf.current = [...policyBuf.current.slice(-SPARK_WINDOW + 1), s.policyLoss];
-      }
-      if (typeof s.valueLoss === "number") {
-        valueBuf.current = [...valueBuf.current.slice(-SPARK_WINDOW + 1), s.valueLoss];
-      }
-      if (typeof s.entropy === "number") {
-        entropyBuf.current = [...entropyBuf.current.slice(-SPARK_WINDOW + 1), s.entropy];
-      }
+      // Only merge the boolean + totalEpisodes from REST so we don't stomp
+      // the live numeric fields supplied by the WS push.
+      setTrainingStatus({
+        running: s.running,
+        episode: s.episode,
+        totalEpisodes: s.totalEpisodes,
+      });
     };
     tick();
     const id = setInterval(tick, POLL_INTERVAL_MS);
@@ -149,7 +173,7 @@ const TrainingPanel = () => {
       alive = false;
       clearInterval(id);
     };
-  }, [trainingStatus.running, setTrainingStatus]);
+  }, [setTrainingStatus]);
 
   const send = async (label: string, body: Parameters<typeof postCommand>[0]) => {
     setBusy(label);
@@ -192,19 +216,19 @@ const TrainingPanel = () => {
         <StatRow
           label="policy loss"
           value={trainingStatus.policyLoss}
-          spark={policyBuf.current}
+          spark={policyBuf}
           color="#FF6B6B"
         />
         <StatRow
           label="value loss"
           value={trainingStatus.valueLoss}
-          spark={valueBuf.current}
+          spark={valueBuf}
           color="#FFC833"
         />
         <StatRow
           label="entropy"
           value={trainingStatus.entropy}
-          spark={entropyBuf.current}
+          spark={entropyBuf}
           color="#4DA8FF"
         />
       </div>

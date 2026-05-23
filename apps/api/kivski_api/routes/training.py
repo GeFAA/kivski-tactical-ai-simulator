@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,11 @@ from kivski_sim.utils import now_unix
 from pydantic import BaseModel, Field
 
 from kivski_api.session import REGISTRY, TrainingJob
+
+try:  # Optional dependency — only used to broadcast initial training_status.
+    from kivski_api.metrics_broadcaster import broadcast_training_status_to_all
+except Exception:  # pragma: no cover - circular import safety
+    broadcast_training_status_to_all = None  # type: ignore[assignment]
 
 router = APIRouter(prefix="/api/training", tags=["training"])
 _LOG = logging.getLogger("kivski_api.training")
@@ -91,14 +97,21 @@ async def start_training(body: StartTrainingBody) -> dict[str, Any]:
 
     job_id = uuid.uuid4().hex[:12]
     log_path = _log_dir() / f"train-{job_id}.log"
+    # Pin a run name so we know exactly which models/logs/<run>/metrics.jsonl
+    # the trainer will write into — that path is what the broadcaster tails.
+    run_name = f"api-{time.strftime('%Y%m%d-%H%M%S')}-{job_id}"
+    metrics_jsonl_path = _repo_root() / "models" / "logs" / run_name / "metrics.jsonl"
 
-    cmd: list[str] = [sys.executable, "-m", "scripts.train"]
+    cmd: list[str] = [sys.executable, "-m", "scripts.train", "train"]
     config_path = body.config or "configs/default.yaml"
     cmd.extend(["--config", config_path])
     if body.episodes is not None:
         cmd.extend(["--episodes", str(int(body.episodes))])
     if body.checkpoint:
         cmd.extend(["--resume", str(body.checkpoint)])
+    # Force "all" telemetry so the JSONL sink is always present (CSV stays
+    # for analytics, JSONL is what powers the live viewer).
+    cmd.extend(["--run-name", run_name, "--telemetry", "all"])
 
     _LOG.info("Launching training: %s", " ".join(cmd))
 
@@ -129,10 +142,33 @@ async def start_training(body: StartTrainingBody) -> dict[str, Any]:
         process=proc,
         episodes=body.episodes,
         resume_from=body.checkpoint,
+        run_name=run_name,
+        metrics_jsonl_path=metrics_jsonl_path,
     )
     REGISTRY.register_training(job)
 
-    return {"job_id": job_id, "pid": proc.pid, "started": True, "log_path": str(log_path)}
+    # Push an initial training_status frame so the UI flips to "running"
+    # immediately instead of waiting for the first metrics record.
+    if broadcast_training_status_to_all is not None:
+        try:
+            await broadcast_training_status_to_all(
+                {
+                    "running": True,
+                    "episode": 0,
+                    "totalEpisodes": int(body.episodes or 0),
+                }
+            )
+        except Exception:
+            _LOG.exception("failed to broadcast initial training_status")
+
+    return {
+        "job_id": job_id,
+        "pid": proc.pid,
+        "started": True,
+        "log_path": str(log_path),
+        "run_name": run_name,
+        "metrics_jsonl_path": str(metrics_jsonl_path),
+    }
 
 
 @router.post("/stop")
@@ -157,6 +193,19 @@ async def stop_training() -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         # Caller can poll /status to see final exit code.
         pass
+    # Notify any live viewers that the trainer has stopped so the UI flips
+    # the pill back to "idle" without having to poll /status.
+    if broadcast_training_status_to_all is not None:
+        try:
+            await broadcast_training_status_to_all(
+                {
+                    "running": False,
+                    "episode": 0,
+                    "totalEpisodes": int(job.episodes or 0),
+                }
+            )
+        except Exception:
+            _LOG.exception("failed to broadcast final training_status")
     return {"stopped": True, "exit_code": job.exit_code}
 
 

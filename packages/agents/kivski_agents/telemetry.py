@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import json
 import os
 import threading
 from abc import ABC, abstractmethod
@@ -37,6 +38,7 @@ from kivski_sim.utils import ensure_dir, now_unix
 __all__ = [
     "TelemetrySink",
     "CSVSink",
+    "JSONLSink",
     "TensorBoardSink",
     "WandbSink",
     "MultiSink",
@@ -208,6 +210,115 @@ class CSVSink(TelemetrySink):
                 return
             self._flush_locked()
             self._closed = True
+
+
+# ---------------------------------------------------------------------------
+# JSONL sink (line-delimited JSON — designed for live tail-reading)
+# ---------------------------------------------------------------------------
+
+
+class JSONLSink(TelemetrySink):
+    """Append-only JSONL sink writing one record per :meth:`log_dict` call.
+
+    Unlike :class:`CSVSink` (which splits scalars into ``step,key,value``
+    rows for analytics tools), this sink emits *one line per update* with
+    every scalar inlined into a single JSON object. That layout is exactly
+    what a live tail-reader (e.g. the API's :class:`MetricsBroadcaster`)
+    wants because a fresh record is self-contained — no need to stitch
+    rows back together by step.
+
+    Layout under ``log_dir / run_name``::
+
+        metrics.jsonl       one JSON object per log_dict() call
+        text.jsonl          free-form text records
+        hparams.json        flat hyperparameter dump (written once)
+
+    Every write is flushed immediately so a downstream reader sees the
+    new line within milliseconds. The sink is thread-safe via an
+    internal lock.
+    """
+
+    def __init__(
+        self,
+        log_dir: Path,
+        run_name: str,
+        filename: str = "metrics.jsonl",
+    ) -> None:
+        self.run_dir: Path = ensure_dir(Path(log_dir) / run_name)
+        self.metrics_path: Path = self.run_dir / filename
+        self.text_path: Path = self.run_dir / "text.jsonl"
+        self.hparams_path: Path = self.run_dir / "hparams.json"
+        self._lock = threading.Lock()
+        self._closed: bool = False
+
+    # -- internal helpers ---------------------------------------------------
+
+    @staticmethod
+    def _write_line(path: Path, record: dict[str, Any]) -> None:
+        """Append ``record`` as a single JSON line, flushed to disk."""
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, default=_jsonl_default) + "\n")
+            fh.flush()
+
+    # -- public API ---------------------------------------------------------
+
+    def log_scalar(self, key: str, value: float, step: int) -> None:
+        if self._closed:
+            return
+        record = {"ts": now_unix(), "step": int(step), str(key): float(value)}
+        with self._lock:
+            self._write_line(self.metrics_path, record)
+
+    def log_dict(self, metrics: dict[str, float], step: int) -> None:
+        if self._closed:
+            return
+        if not metrics:
+            return
+        record: dict[str, Any] = {"ts": now_unix(), "step": int(step)}
+        for k, v in metrics.items():
+            # Coerce to float when possible; fall back to the raw value so
+            # ints / bools / strings still round-trip through JSON.
+            try:
+                record[str(k)] = float(v)
+            except (TypeError, ValueError):
+                record[str(k)] = v
+        with self._lock:
+            self._write_line(self.metrics_path, record)
+
+    def log_text(self, key: str, text: str, step: int) -> None:
+        if self._closed:
+            return
+        record = {
+            "ts": now_unix(),
+            "step": int(step),
+            "key": str(key),
+            "text": str(text),
+        }
+        with self._lock:
+            self._write_line(self.text_path, record)
+
+    def log_hyperparams(self, hparams: dict[str, Any]) -> None:
+        if self._closed:
+            return
+        # Hyperparams are small and rewritten in full.
+        with self._lock, self.hparams_path.open("w", encoding="utf-8") as fh:
+            json.dump({str(k): _jsonl_default(v) for k, v in hparams.items()}, fh, indent=2)
+            fh.flush()
+
+    def flush(self) -> None:
+        # All writes are flushed immediately; nothing buffered.
+        return None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+
+
+def _jsonl_default(v: Any) -> Any:
+    """JSON encoder fallback that coerces unknown objects to ``str``."""
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    return str(v)
 
 
 # ---------------------------------------------------------------------------
@@ -458,12 +569,14 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
     """Construct a telemetry sink from a config string.
 
     Supported values for ``backend``:
-        * ``"csv"`` -- :class:`CSVSink`
+        * ``"csv"`` -- :class:`CSVSink` + :class:`JSONLSink` (CSV stays for
+          analytics tools while JSONL is the canonical live-stream feed).
+        * ``"jsonl"`` -- :class:`JSONLSink` only (no CSV/TB/W&B).
         * ``"tensorboard"`` -- :class:`TensorBoardSink`
         * ``"wandb"`` -- :class:`WandbSink`
-        * ``"all"`` -- CSV + TensorBoard (+ W&B if importable). Missing
-          optional backends are skipped with a console-friendly warning
-          via the standard :mod:`logging` module rather than failing.
+        * ``"all"`` -- CSV + JSONL + TensorBoard (+ W&B if importable).
+          Missing optional backends are skipped silently instead of
+          failing the run.
         * ``"none"`` -- :class:`NoOpSink`
 
     Args:
@@ -482,7 +595,11 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
     log_path = Path(log_dir)
 
     if key == "csv":
-        return CSVSink(log_path, run_name)
+        # Always pair CSV with JSONL so the live API has a tail-friendly
+        # source without forcing operators to switch backends.
+        return MultiSink([CSVSink(log_path, run_name), JSONLSink(log_path, run_name)])
+    if key == "jsonl":
+        return JSONLSink(log_path, run_name)
     if key == "tensorboard":
         return TensorBoardSink(log_path, run_name)
     if key == "wandb":
@@ -490,7 +607,10 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
     if key == "none":
         return NoOpSink()
     if key == "all":
-        sinks: list[TelemetrySink] = [CSVSink(log_path, run_name)]
+        sinks: list[TelemetrySink] = [
+            CSVSink(log_path, run_name),
+            JSONLSink(log_path, run_name),
+        ]
         # TensorBoard is "best effort" in "all" mode.
         with contextlib.suppress(ImportError):
             sinks.append(TensorBoardSink(log_path, run_name))
@@ -500,5 +620,6 @@ def make_sink(backend: str, log_dir: Path, run_name: str) -> TelemetrySink:
         return MultiSink(sinks)
 
     raise ValueError(
-        f"Unknown telemetry backend {backend!r}. Expected one of: csv, tensorboard, wandb, all, none."
+        f"Unknown telemetry backend {backend!r}. "
+        f"Expected one of: csv, jsonl, tensorboard, wandb, all, none."
     )

@@ -23,10 +23,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from kivski_sim.config import KivskiConfig, load_config
 
 from kivski_api import __version__
+from kivski_api.metrics_broadcaster import MetricsBroadcaster
 from kivski_api.routes import checkpoints as checkpoints_routes
 from kivski_api.routes import health as health_routes
 from kivski_api.routes import maps as maps_routes
 from kivski_api.routes import match as match_routes
+from kivski_api.routes import system as system_routes
 from kivski_api.routes import training as training_routes
 from kivski_api.routes import ws as ws_routes
 from kivski_api.session import REGISTRY
@@ -64,10 +66,16 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _LOG.info("Kivski API starting (version=%s, tick_hz=%s)", __version__, cfg.server.tick_broadcast_hz)
+        # Start the live metrics broadcaster so any /api/training/start
+        # call has a tail loop ready before the trainer writes its first
+        # metrics line.
+        broadcaster = MetricsBroadcaster(REGISTRY)
+        await broadcaster.start()
         try:
             yield
         finally:
-            _LOG.info("Kivski API shutting down -- stopping %d match(es)", len(REGISTRY.sessions))
+            _LOG.info("Kivski API shutting down -- stopping broadcaster + %d match(es)", len(REGISTRY.sessions))
+            await broadcaster.stop()
             await REGISTRY.shutdown()
 
     app = FastAPI(
@@ -94,6 +102,7 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
     app.include_router(checkpoints_routes.router)
     app.include_router(training_routes.router)
     app.include_router(match_routes.router)
+    app.include_router(system_routes.router)
     app.include_router(ws_routes.router)
 
     return app

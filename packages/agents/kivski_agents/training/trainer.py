@@ -435,6 +435,21 @@ class Trainer:
                 },
                 step=self.update_step,
             )
+            # Consolidated "live" snapshot for the API broadcaster — keys
+            # mirror the frontend MetricsSample / TrainingStatus contract
+            # so the live viewer can render without any extra mapping.
+            self.telemetry.log_dict(
+                {
+                    "live/episode": float(self.episode_count),
+                    "live/total_episodes": float(self.tcfg.total_episodes),
+                    "live/policy_loss": float(loss.policy_loss),
+                    "live/value_loss": float(loss.value_loss),
+                    "live/entropy": float(loss.entropy),
+                    "live/fps": float(fps),
+                    "live/kl": float(loss.kl),
+                },
+                step=self.update_step,
+            )
         except Exception:
             pass
 
@@ -470,6 +485,21 @@ class Trainer:
                     },
                     step=self.update_step,
                 )
+        # Consolidated "live" winrate record for the API broadcaster — the
+        # MetricsSample frame on the frontend expects per-baseline winrates
+        # on a single record so it can plot them on one axis.
+        live: dict[str, float] = {"live/episode": float(self.episode_count)}
+        random_res = results.get("random")
+        if random_res is not None:
+            live["live/winrate_vs_random"] = float(random_res.yellow_winrate)
+        # Pick whichever scripted baseline was actually evaluated; the
+        # default eval flow runs scripted_rush + scripted_hold.
+        scripted = results.get("scripted_rush") or results.get("scripted_hold")
+        if scripted is not None:
+            live["live/winrate_vs_scripted"] = float(scripted.yellow_winrate)
+        if len(live) > 1:
+            with contextlib.suppress(Exception):
+                self.telemetry.log_dict(live, step=self.update_step)
 
     def _handle_stage_flip(self) -> None:
         """Rebuild env / model when curriculum advances to a new stage."""

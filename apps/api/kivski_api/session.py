@@ -72,6 +72,12 @@ class TrainingJob:
     episodes: int | None = None
     resume_from: str | None = None
     exit_code: int | None = None
+    # Run identifier + on-disk log directory that the trainer writes its
+    # metrics.jsonl into. Filled in by the /api/training/start endpoint
+    # when it computes the run name so the broadcaster can tail it without
+    # having to rediscover the path.
+    run_name: str | None = None
+    metrics_jsonl_path: Path | None = None
 
     def is_running(self) -> bool:
         if self.process is None:
