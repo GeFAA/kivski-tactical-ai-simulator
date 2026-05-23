@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "@/lib/store";
 import {
   getCheckpoints,
+  getResumeTarget,
   getTrainingConfigs,
   getTrainingStatus,
   postCommand,
   type CheckpointInfo,
+  type ResumeTargetInfo,
   type TrainingConfigInfo,
 } from "@/lib/api-client";
 
@@ -104,6 +106,10 @@ const TrainingPanel = () => {
   const [episodeCount, setEpisodeCount] = useState(10);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Mirrors GET /api/training/resume-target so the Start button can
+  // advertise "Resumes from <name>" instead of silently re-using the
+  // latest checkpoint without any UI signal.
+  const [resumeTarget, setResumeTarget] = useState<ResumeTargetInfo | null>(null);
 
   // Derived sparkline buffers — tail of metricsHistory.
   const policyBuf = useMemo(
@@ -131,13 +137,16 @@ const TrainingPanel = () => {
     [metricsHistory],
   );
 
-  // Initial config + checkpoint fetch.
+  // Initial config + checkpoint + resume-target fetch.
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [cfgs, ckpts] = await Promise.all([
+      const [cfgs, ckpts, resume] = await Promise.all([
         getTrainingConfigs(),
         getCheckpoints().catch(() => [] as CheckpointInfo[]),
+        getResumeTarget().catch(
+          (): ResumeTargetInfo => ({ available: false, path: null, name: null }),
+        ),
       ]);
       if (!alive) return;
       // Defense-in-depth: enforce array shape so a wire-protocol regression
@@ -148,6 +157,7 @@ const TrainingPanel = () => {
       if (safeCfgs[0]) setSelectedConfig(safeCfgs[0].id);
       setCheckpoints(safeCkpts);
       if (safeCkpts[0]) setSelectedCkpt(safeCkpts[0].id);
+      setResumeTarget(resume);
     })();
     return () => {
       alive = false;
@@ -268,6 +278,11 @@ const TrainingPanel = () => {
             })
           }
           disabled={busy !== null || trainingStatus.running}
+          title={
+            resumeTarget?.available
+              ? `Resumes from ${resumeTarget.name ?? resumeTarget.path}`
+              : "Starts a fresh training run (no checkpoint to resume)"
+          }
         >
           Start
         </button>

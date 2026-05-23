@@ -23,7 +23,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import subprocess
+import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from kivski_sim.config import KivskiConfig, load_config
 from kivski_sim.engine import Engine
 from kivski_sim.map_loader import MapData, load_map
+from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame, ReplayHeader, ReplayWriter
 from kivski_sim.utils import now_unix
 
 from kivski_api.policies import (
@@ -48,10 +52,49 @@ __all__ = [
     "MatchSession",
     "SessionRegistry",
     "TrainingJob",
+    "TrainingWatchdog",
     "REGISTRY",
 ]
 
+# How long the watchdog sleeps between poll cycles. Long enough that it's
+# basically free; short enough that a crashed trainer doesn't go more
+# than ~10s without being noticed.
+_WATCHDOG_INTERVAL_SECONDS: float = 10.0
+# Cap on auto-restart attempts per job. A persistently-crashing trainer
+# (bad checkpoint, broken config) is a real user problem -- silently
+# spinning up doomed processes forever is worse than surfacing the failure.
+_WATCHDOG_MAX_RESTARTS: int = 3
+
 _LOG = logging.getLogger("kivski_api.session")
+
+
+class _EventOnlyReplayWriter:
+    """A :class:`ReplayWriter`-shaped facade that drops action frames.
+
+    Live matches run at 10-20 Hz for many minutes, so persisting every
+    action frame would balloon disk usage to 50k+ frames per match.
+    V1 intentionally keeps only event frames (round_start, plant,
+    defuse, kill, round_end) — they're small, semantically dense, and
+    enough for post-hoc match analysis. The full ReplayReader can still
+    parse the resulting files because the format treats absent action
+    frames as legal.
+    """
+
+    def __init__(self, inner: ReplayWriter) -> None:
+        self._inner: ReplayWriter | None = inner
+
+    def write_actions(self, _frame: ReplayActionFrame) -> None:  # noqa: D401
+        # Intentional no-op: see class docstring.
+        return None
+
+    def write_event(self, frame: ReplayEventFrame) -> None:
+        if self._inner is not None:
+            self._inner.write_event(frame)
+
+    def close(self) -> None:
+        if self._inner is not None:
+            self._inner.close()
+            self._inner = None
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +126,12 @@ class TrainingJob:
     # having to rediscover the path.
     run_name: str | None = None
     metrics_jsonl_path: Path | None = None
+    # Watchdog state. ``stop_requested`` flips to True when the user
+    # explicitly calls /api/training/stop so the watchdog won't auto-
+    # restart what was intentionally stopped. ``restart_count`` caps the
+    # number of crashes we'll silently recover from per job.
+    stop_requested: bool = False
+    restart_count: int = 0
 
     def is_running(self) -> bool:
         if self.process is None:
@@ -142,15 +191,28 @@ class MatchSession:
     _task: asyncio.Task[None] | None = None
     _stop_event: asyncio.Event = field(default_factory=asyncio.Event)
     _broadcast_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Auto-save: every live match streams its event frames (round_start,
+    # plant, defuse, kill, round_end) into a replay file under
+    # ``models/replays/match-<id>-<timestamp>.replay``. The writer is
+    # created lazily on the first start() call so unit tests that
+    # construct a MatchSession without ever running it don't litter disk.
+    _replay_writer: _EventOnlyReplayWriter | None = field(default=None, repr=False)
+    _replay_path: Path | None = field(default=None, repr=False)
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Kick off the background tick task if not already running."""
+        """Kick off the background tick task if not already running.
+
+        Side-effect: creates the auto-save :class:`ReplayWriter` if one
+        isn't attached yet, so events captured by the very first engine
+        tick land in the on-disk replay.
+        """
         if self._task is not None and not self._task.done():
             return
+        self._ensure_replay_writer()
         self._stop_event = asyncio.Event()
         loop = asyncio.get_event_loop()
         self._task = loop.create_task(self.run_loop(), name=f"match-loop-{self.id}")
@@ -159,18 +221,109 @@ class MatchSession:
         """Signal the loop to stop and wait for it to exit cleanly."""
         self._stop_event.set()
         if self._task is None:
+            self._close_replay_writer()
             return
         try:
             await asyncio.wait_for(self._task, timeout=2.0)
         except (TimeoutError, asyncio.CancelledError):
             self._task.cancel()
         self._task = None
+        # The loop's finally{} normally handles this, but stop() may be
+        # invoked before the loop ever ran (e.g. registry shutdown right
+        # after create_match).
+        self._close_replay_writer()
 
     def reset(self) -> None:
-        """Reset the underlying engine. Loop continues running."""
+        """Reset the underlying engine. Loop continues running.
+
+        Auto-save policy: closes the current replay file and opens a fresh
+        one so each reset produces its own ``.replay`` artefact rather
+        than concatenating across resets (which would confuse the format,
+        because the engine emits a fresh ``round_start`` event for tick 0).
+        """
+        # Close + reopen so each reset starts a clean .replay file.
+        self._close_replay_writer()
         self.engine.reset()
         self.policy_yellow.reset()
         self.policy_blue.reset()
+        self._ensure_replay_writer()
+
+    def _replay_dir(self) -> Path:
+        """Resolve ``models/replays`` relative to the repo root."""
+        here = Path(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "models" / "replays"
+            # Accept either an existing dir or one we can create as
+            # ``models/replays`` next to an existing ``models``.
+            if candidate.parent.is_dir():
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate
+        fallback = here.parents[3] / "models" / "replays"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    def _ensure_replay_writer(self) -> None:
+        """Open the per-match ``.replay`` file and wire it into the engine.
+
+        Idempotent: a second call while a writer is already attached is a
+        no-op so reset()+start() doesn't double-open. Failure is logged
+        and swallowed -- replays are nice-to-have, not load-bearing.
+        """
+        if self._replay_writer is not None:
+            return
+        try:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            path = self._replay_dir() / f"match-{self.id}-{ts}.replay"
+            header = ReplayHeader(
+                seed=int(getattr(self.engine.state, "seed", 0) or 0),
+                config_hash="",
+                map_name=str(self.map_data.name),
+                team_size=int(self.cfg.simulation.team_size),
+                created_at=float(time.time()),
+                kivski_version="0.1.0",
+            )
+            raw_writer = ReplayWriter(path, header)
+            # Wrap in an event-only facade so we don't write 10+ frames/sec of
+            # action payloads. The engine treats both writer types identically.
+            self._replay_writer = _EventOnlyReplayWriter(raw_writer)
+            self._replay_path = path
+            # The facade is a structural ReplayWriter (duck-typed); the
+            # engine only calls write_actions / write_event / close.
+            self.engine.set_replay_writer(self._replay_writer)  # type: ignore[arg-type]
+            # The engine's initial reset() fires before we attach so the
+            # very first ``round_start`` would be lost. Write a synthetic
+            # one here so the replay always has at least one frame describing
+            # round 0; subsequent events (plant/defuse/kill/round_end and
+            # later round_starts) flow through the engine as normal.
+            with contextlib.suppress(Exception):
+                self._replay_writer.write_event(
+                    ReplayEventFrame(
+                        tick=int(getattr(self.engine.state, "tick", 0) or 0),
+                        kind="round_start",
+                        data={
+                            "round_id": int(getattr(self.engine.state, "round_id", 0) or 0),
+                            "seed": int(getattr(self.engine.state, "seed", 0) or 0),
+                            "source": "session_open",
+                        },
+                    )
+                )
+            _LOG.info("Match %s auto-saving replay (event-only) to %s", self.id, path)
+        except Exception:
+            _LOG.exception("Match %s failed to open replay writer (auto-save disabled)", self.id)
+            self._replay_writer = None
+            self._replay_path = None
+
+    def _close_replay_writer(self) -> None:
+        """Detach + close the replay writer if one is attached."""
+        if self._replay_writer is None:
+            return
+        with contextlib.suppress(Exception):
+            self.engine.set_replay_writer(None)
+        try:
+            self._replay_writer.close()
+        except Exception:
+            _LOG.exception("Match %s failed to close replay writer", self.id)
+        self._replay_writer = None
 
     def set_speed(self, multiplier: float) -> None:
         # Clamp to a sensible range so a typo can't peg the CPU at 1000x.
@@ -265,6 +418,7 @@ class MatchSession:
             _LOG.info("Match %s loop cancelled", self.id)
             raise
         finally:
+            self._close_replay_writer()
             _LOG.info("Match %s loop stopped", self.id)
 
     # ------------------------------------------------------------------
@@ -455,3 +609,160 @@ class SessionRegistry:
 
 
 REGISTRY = SessionRegistry()
+
+
+# ---------------------------------------------------------------------------
+# Watchdog
+# ---------------------------------------------------------------------------
+
+
+class TrainingWatchdog:
+    """Background task that auto-restarts a crashed training subprocess.
+
+    Lifecycle: started from the FastAPI lifespan, polls every
+    :data:`_WATCHDOG_INTERVAL_SECONDS`. For each registered
+    :class:`TrainingJob` it checks ``process.poll()`` -- if the process
+    exited with a non-zero code *and* the user didn't explicitly stop
+    the job *and* we haven't exhausted the restart budget, we spawn a
+    fresh ``python -m scripts.train train`` re-using the same config
+    and ``--resume``-ing from the newest checkpoint on disk.
+
+    Implementation note: spawning the trainer requires the route-layer
+    helpers (``_find_resumable_checkpoint``, ``_log_dir``, ...) which
+    would create an import cycle if imported at module load. We import
+    them lazily inside ``_restart_job`` instead.
+    """
+
+    def __init__(self, registry: SessionRegistry) -> None:
+        self._registry = registry
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event: asyncio.Event = asyncio.Event()
+
+    async def start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
+        self._stop_event = asyncio.Event()
+        loop = asyncio.get_event_loop()
+        self._task = loop.create_task(self._run(), name="training-watchdog")
+        _LOG.info(
+            "TrainingWatchdog started (interval=%.1fs, max_restarts=%d)",
+            _WATCHDOG_INTERVAL_SECONDS,
+            _WATCHDOG_MAX_RESTARTS,
+        )
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is None:
+            return
+        try:
+            await asyncio.wait_for(self._task, timeout=2.0)
+        except (TimeoutError, asyncio.CancelledError):
+            self._task.cancel()
+        self._task = None
+
+    async def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._check_once()
+            except Exception:
+                _LOG.exception("TrainingWatchdog poll cycle raised")
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=_WATCHDOG_INTERVAL_SECONDS)
+            except TimeoutError:
+                continue
+
+    def _check_once(self) -> None:
+        for job in list(self._registry.training.values()):
+            self._maybe_restart(job)
+
+    def _maybe_restart(self, job: TrainingJob) -> None:
+        if job.process is None:
+            return
+        if job.is_running():
+            return
+        if job.stop_requested:
+            return
+        if job.exit_code is None:
+            return  # process never started; nothing to recover
+        if job.exit_code == 0:
+            return  # clean exit, training finished normally
+        if job.restart_count >= _WATCHDOG_MAX_RESTARTS:
+            _LOG.warning(
+                "TrainingWatchdog: job %s exhausted restart budget (exit=%s)",
+                job.job_id,
+                job.exit_code,
+            )
+            return
+        self._restart_job(job)
+
+    def _restart_job(self, job: TrainingJob) -> None:
+        # Lazy import to avoid the routes layer importing session and vice
+        # versa at module-load time.
+        from kivski_api.routes.training import (
+            _find_resumable_checkpoint,
+            _log_dir,
+            _repo_root,
+        )
+
+        resume_target = _find_resumable_checkpoint()
+        resume_str = str(resume_target) if resume_target is not None else job.resume_from
+        new_job_id = uuid.uuid4().hex[:12]
+        log_path = _log_dir() / f"train-{new_job_id}.log"
+
+        cmd: list[str] = [
+            sys.executable,
+            "-m",
+            "scripts.train",
+            "train",
+            "--config",
+            job.config_path or "configs/default.yaml",
+        ]
+        if job.episodes is not None:
+            cmd.extend(["--episodes", str(int(job.episodes))])
+        if resume_str:
+            cmd.extend(["--resume", str(resume_str)])
+        run_name = f"watchdog-{time.strftime('%Y%m%d-%H%M%S')}-{new_job_id}"
+        metrics_jsonl_path = _repo_root() / "models" / "logs" / run_name / "metrics.jsonl"
+        cmd.extend(["--run-name", run_name, "--telemetry", "all"])
+
+        _LOG.warning(
+            "TrainingWatchdog: restarting crashed job %s (exit=%s, attempt=%d/%d) -> %s",
+            job.job_id,
+            job.exit_code,
+            job.restart_count + 1,
+            _WATCHDOG_MAX_RESTARTS,
+            " ".join(cmd),
+        )
+        try:
+            log_fh = log_path.open("wb")
+        except OSError:
+            _LOG.exception("TrainingWatchdog: cannot open log file %s", log_path)
+            return
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(_repo_root()),
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                close_fds=(os.name != "nt"),
+            )
+        except OSError:
+            log_fh.close()
+            _LOG.exception("TrainingWatchdog: failed to spawn restart for job %s", job.job_id)
+            return
+
+        new_job = TrainingJob(
+            job_id=new_job_id,
+            config_path=job.config_path,
+            log_path=log_path,
+            started_at=now_unix(),
+            pid=proc.pid,
+            process=proc,
+            episodes=job.episodes,
+            resume_from=resume_str,
+            run_name=run_name,
+            metrics_jsonl_path=metrics_jsonl_path,
+            restart_count=job.restart_count + 1,
+        )
+        self._registry.register_training(new_job)

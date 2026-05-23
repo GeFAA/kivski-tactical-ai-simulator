@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { getCheckpoints, postCommand, type CheckpointInfo } from "@/lib/api-client";
+import {
+  getCheckpoints,
+  getResumeTarget,
+  postCommand,
+  type CheckpointInfo,
+  type ResumeTargetInfo,
+} from "@/lib/api-client";
 import { useStore } from "@/lib/store";
 import MatchSetupModal from "@/components/MatchSetupModal";
 
@@ -23,17 +29,25 @@ const BottomControls = () => {
   const [busy, setBusy] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [matchModalOpen, setMatchModalOpen] = useState(false);
+  // Auto-resume target: populated from GET /api/training/resume-target so
+  // the Start Training button can show "Resumes from <name>" instead of
+  // a generic tooltip. Refreshes on mount; backend is the source of truth.
+  const [resumeTarget, setResumeTarget] = useState<ResumeTargetInfo | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const list = await getCheckpoints();
+        const [list, resume] = await Promise.all([
+          getCheckpoints(),
+          getResumeTarget(),
+        ]);
         if (!alive) return;
         setCheckpoints(list);
         if (list[0]) setSelectedCkpt(list[0].id);
+        setResumeTarget(resume);
       } catch (err) {
-         
+
         console.warn("[kivski] checkpoint list unavailable:", err);
       }
     })();
@@ -146,7 +160,13 @@ const BottomControls = () => {
           className="btn btn-primary"
           onClick={() => send("start training", { type: "start_training" })}
           disabled={busy !== null || trainingRunning}
-          title={trainingRunning ? "A training job is already running" : undefined}
+          title={
+            trainingRunning
+              ? "A training job is already running"
+              : resumeTarget?.available
+                ? `Resumes from ${resumeTarget.name ?? resumeTarget.path}`
+                : "Starts a fresh training run (no checkpoint to resume)"
+          }
         >
           Start Training
         </button>

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   AgentInspection,
   AgentSnapshot,
@@ -253,7 +254,27 @@ const computeEconomySample = (
 
 // ---------- Store ----------
 
-export const useStore = create<AppState>((set) => ({
+// Persisted slice of the UI state. We intentionally exclude transient
+// per-match selections (selectedAgentId, paused, currentMatchId, ...)
+// because they belong to whichever match was live when the tab closed
+// and would point at dead data on the next page load. The debug toggles
+// + playback speed + active tab are *user preferences* and survive
+// across reloads via localStorage.
+type PersistedUI = Pick<
+  AppState,
+  | "showFov"
+  | "showSound"
+  | "showComms"
+  | "showLastKnown"
+  | "showHeatmap"
+  | "speed"
+  | "rightTab"
+>;
+
+const PERSIST_STORAGE_KEY = "kivski-ui-state";
+const PERSIST_STORAGE_VERSION = 1;
+
+export const useStore = create<AppState>()(persist((set) => ({
   ...initialMatch,
   ...initialUI,
   ...initialInspection,
@@ -390,6 +411,23 @@ export const useStore = create<AppState>((set) => ({
       ...initialFeed,
       ...initialMetrics,
     }),
+}), {
+  name: PERSIST_STORAGE_KEY,
+  version: PERSIST_STORAGE_VERSION,
+  storage: createJSONStorage(() => localStorage),
+  // Whitelist exactly the UI-preference fields we want to survive a
+  // reload. Anything not listed here is dropped from the persisted
+  // payload, which means the next page load reads fresh defaults for
+  // match data, inspection state, metrics history, etc.
+  partialize: (state): PersistedUI => ({
+    showFov: state.showFov,
+    showSound: state.showSound,
+    showComms: state.showComms,
+    showLastKnown: state.showLastKnown,
+    showHeatmap: state.showHeatmap,
+    speed: state.speed,
+    rightTab: state.rightTab,
+  }),
 }));
 
 // ---------- Selector helpers ----------

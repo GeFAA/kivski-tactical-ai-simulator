@@ -31,7 +31,7 @@ from kivski_api.routes import match as match_routes
 from kivski_api.routes import system as system_routes
 from kivski_api.routes import training as training_routes
 from kivski_api.routes import ws as ws_routes
-from kivski_api.session import REGISTRY
+from kivski_api.session import REGISTRY, TrainingWatchdog
 
 __all__ = ["create_app"]
 
@@ -71,12 +71,19 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
         # metrics line.
         broadcaster = MetricsBroadcaster(REGISTRY)
         await broadcaster.start()
+        # Start the training watchdog so a crashed trainer subprocess
+        # auto-restarts from the most recent checkpoint instead of
+        # silently leaving the system idle.
+        watchdog = TrainingWatchdog(REGISTRY)
+        await watchdog.start()
         try:
             yield
         finally:
             _LOG.info(
-                "Kivski API shutting down -- stopping broadcaster + %d match(es)", len(REGISTRY.sessions)
+                "Kivski API shutting down -- stopping broadcaster + watchdog + %d match(es)",
+                len(REGISTRY.sessions),
             )
+            await watchdog.stop()
             await broadcaster.stop()
             await REGISTRY.shutdown()
 

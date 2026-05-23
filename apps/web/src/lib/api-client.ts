@@ -209,6 +209,38 @@ interface RawTrainingStatus {
   started_at?: number;
 }
 
+/**
+ * Wire shape for ``GET /api/training/resume-target``: tells the UI
+ * whether the next ``POST /api/training/start`` would auto-resume from
+ * a checkpoint on disk and, if so, which one. Used to render the
+ * "Resumes from <X>" tooltip on the Start button so the user never
+ * accidentally re-trains from scratch when they meant to continue.
+ */
+export interface ResumeTargetInfo {
+  available: boolean;
+  path: string | null;
+  name: string | null;
+}
+
+export async function getResumeTarget(): Promise<ResumeTargetInfo> {
+  try {
+    const res = await fetch(`${API_BASE}/training/resume-target`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return { available: false, path: null, name: null };
+    const raw = (await res.json()) as Partial<ResumeTargetInfo> | null;
+    if (!raw || typeof raw !== "object") return { available: false, path: null, name: null };
+    return {
+      available: Boolean(raw.available),
+      path: typeof raw.path === "string" ? raw.path : null,
+      name: typeof raw.name === "string" ? raw.name : null,
+    };
+  } catch {
+    return { available: false, path: null, name: null };
+  }
+}
+
 /** Get a one-shot snapshot of the training loop state. */
 export async function getTrainingStatus(): Promise<TrainingStatus | null> {
   try {

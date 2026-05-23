@@ -26,6 +26,11 @@ from pydantic import BaseModel, Field
 
 from kivski_api.session import REGISTRY, TrainingJob
 
+# Valid checkpoint extensions we'll auto-resume from. ``.pt`` is the
+# convention used by the MAPPO trainer; ``.ckpt`` is kept for forward
+# compatibility with any external tools that write that suffix.
+_VALID_CKPT_EXTS: tuple[str, ...] = (".pt", ".ckpt")
+
 try:  # Optional dependency — only used to broadcast initial training_status.
     from kivski_api.metrics_broadcaster import broadcast_training_status_to_all
 except Exception:  # pragma: no cover - circular import safety
@@ -52,6 +57,57 @@ def _log_dir() -> Path:
 def _configs_dir() -> Path:
     """Resolve the repo-root ``configs/`` directory."""
     return _repo_root() / "configs"
+
+
+def _ckpt_root() -> Path:
+    """Repo-rooted ``models/checkpoints`` directory.
+
+    The trainer writes per-run checkpoints under
+    ``models/checkpoints/<run_name>/main_ep_*.pt`` and (after best-promotion)
+    a shared ``models/checkpoints/best.pt``. Auto-resume needs to search
+    the whole tree.
+    """
+    p = _repo_root() / "models" / "checkpoints"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _find_resumable_checkpoint() -> Path | None:
+    """Pick the most-recently-modified ``.pt`` / ``.ckpt`` to resume from.
+
+    Prefers ``best.pt`` when it exists (highest quality), otherwise falls
+    back to the newest ``main_ep_*.pt`` anywhere under
+    ``models/checkpoints/``. Returns ``None`` when nothing is on disk so
+    a fresh run starts cleanly.
+    """
+    root = _ckpt_root()
+    # Prefer the curated best checkpoint when available.
+    best = root / "best.pt"
+    if best.is_file():
+        return best
+    # Otherwise scan recursively for the newest per-episode checkpoint.
+    candidates: list[Path] = []
+    for ext in _VALID_CKPT_EXTS:
+        candidates.extend(root.rglob(f"*{ext}"))
+    candidates = [p for p in candidates if p.is_file() and p.name != "best.pt"]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+@router.get("/resume-target")
+async def get_resume_target() -> dict[str, Any]:
+    """Surface what the next ``POST /api/training/start`` would auto-resume from.
+
+    Used by the frontend to decide whether to render the "Resumes from
+    <path>" hint next to the Start button. Returns ``available: false``
+    plus ``path: null`` when no checkpoint exists.
+    """
+    auto = _find_resumable_checkpoint()
+    if auto is None:
+        return {"available": False, "path": None, "name": None}
+    return {"available": True, "path": str(auto), "name": auto.stem}
 
 
 @router.get("/configs")
@@ -82,6 +138,14 @@ class StartTrainingBody(BaseModel):
     config: str | None = Field(default=None, description="Path to config YAML")
     episodes: int | None = Field(default=None, ge=1, description="Override total episodes")
     checkpoint: str | None = Field(default=None, description="Resume from checkpoint name or path")
+    # When True, never auto-detect a checkpoint -- always start from
+    # scratch. Useful for sweeps / regression runs that must not be
+    # contaminated by previously-trained weights. Default False keeps
+    # the "nothing is ever lost" auto-save promise.
+    fresh_start: bool = Field(
+        default=False,
+        description="Skip auto-resume detection and always start from scratch.",
+    )
 
 
 @router.post("/start")
@@ -107,8 +171,21 @@ async def start_training(body: StartTrainingBody) -> dict[str, Any]:
     cmd.extend(["--config", config_path])
     if body.episodes is not None:
         cmd.extend(["--episodes", str(int(body.episodes))])
+
+    # Resume logic: explicit body.checkpoint always wins; otherwise we
+    # auto-detect the newest on-disk checkpoint so a crashed/restarted
+    # run picks up where it left off. ``fresh_start=true`` opts out.
+    resolved_resume: str | None = None
     if body.checkpoint:
-        cmd.extend(["--resume", str(body.checkpoint)])
+        resolved_resume = str(body.checkpoint)
+        _LOG.info("[kivski-api] resuming from %s (explicit)", resolved_resume)
+    elif not body.fresh_start:
+        auto = _find_resumable_checkpoint()
+        if auto is not None:
+            resolved_resume = str(auto)
+            _LOG.info("[kivski-api] resuming from %s (auto)", resolved_resume)
+    if resolved_resume is not None:
+        cmd.extend(["--resume", resolved_resume])
     # Force "all" telemetry so the JSONL sink is always present (CSV stays
     # for analytics, JSONL is what powers the live viewer).
     cmd.extend(["--run-name", run_name, "--telemetry", "all"])
@@ -141,7 +218,10 @@ async def start_training(body: StartTrainingBody) -> dict[str, Any]:
         pid=proc.pid,
         process=proc,
         episodes=body.episodes,
-        resume_from=body.checkpoint,
+        # Persist the *resolved* path (explicit or auto) so /api/training/status
+        # can surface what we actually resumed from, not just what the user
+        # typed.
+        resume_from=resolved_resume,
         run_name=run_name,
         metrics_jsonl_path=metrics_jsonl_path,
     )
@@ -168,6 +248,9 @@ async def start_training(body: StartTrainingBody) -> dict[str, Any]:
         "log_path": str(log_path),
         "run_name": run_name,
         "metrics_jsonl_path": str(metrics_jsonl_path),
+        # Expose the auto-resume decision so the UI can show
+        # "Resumes from <path>" instead of a blind "Started".
+        "resumed_from": resolved_resume,
     }
 
 
@@ -177,6 +260,8 @@ async def stop_training() -> dict[str, Any]:
     job = REGISTRY.latest_training()
     if job is None or not job.is_running() or job.process is None:
         raise HTTPException(status_code=404, detail="no running training job")
+    # Mark the stop as intentional so the watchdog won't auto-restart it.
+    job.stop_requested = True
     try:
         if os.name == "nt":
             # SIGTERM isn't really supported on Windows; .terminate() does the

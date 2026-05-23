@@ -24,6 +24,9 @@ on the config it passes to the vec env.
 from __future__ import annotations
 
 import contextlib
+import json
+import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,6 +99,11 @@ class TrainerConfig:
     # Number of worker threads/processes for the parallel backends. None ->
     # detected from CPU count at construction time.
     num_workers: int | None = None
+    # Auto-save retention: how many *recent* per-episode checkpoints to keep on
+    # disk inside ``checkpoint_dir``. Older ones (besides ``best.pt``) are
+    # pruned together with their .json sidecars after every save. ``0`` or
+    # a negative value disables retention pruning (keep everything).
+    retention_count: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +209,22 @@ class Trainer:
         # Misc: an internal RNG for opponent sampling.
         self._rng: np.random.Generator = np.random.default_rng(int(self.active_cfg.seed) + 31337)
 
+        # Best-checkpoint tracking. We persist the best score under
+        # ``<root>/checkpoints/best.json`` so it survives API restarts and
+        # bench runs that reuse the same checkpoint directory tree. The
+        # actual weights file lives at ``<root>/checkpoints/best.pt`` (copied
+        # from whichever per-run checkpoint produced the best score).
+        # ``_best_score`` is loaded eagerly from disk so a long-running
+        # training session that resumed after a crash doesn't immediately
+        # overwrite a better-scoring previous best.
+        self._best_score: float = float("-inf")
+        self._best_episode: int = -1
+        # Most-recent per-episode checkpoint path, populated lazily by
+        # ``save_checkpoint``. Used by ``_maybe_promote_best`` to copy the
+        # right .pt onto ``best.pt`` after an eval improves the score.
+        self._latest_per_episode_ckpt: Path | None = None
+        self._load_best_score_from_disk()
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -278,6 +302,14 @@ class Trainer:
                 try:
                     eval_results = self.evaluate()
                     self._log_eval_results(eval_results)
+                    # Promote the most-recent per-episode checkpoint to
+                    # ``best.pt`` when the combined eval score improves.
+                    # We do this *after* evaluate so the score reflects the
+                    # weights actually on disk (the per-episode .pt that the
+                    # checkpoint_every branch just wrote, or the previous one
+                    # when checkpoint_every and eval_every are unaligned).
+                    with contextlib.suppress(Exception):
+                        self._maybe_promote_best(eval_results)
                 except Exception as exc:  # noqa: BLE001 - never fatal
                     self.telemetry.log_text("eval_error", repr(exc), step=self.update_step)
                 last_eval_at = self.episode_count
@@ -352,7 +384,14 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, episode: int, metadata: dict[str, Any]) -> Path:
-        """Save a full :class:`MAPPOTrainer` checkpoint at ``ckpt_dir/main_ep_<N>.pt``."""
+        """Save a full :class:`MAPPOTrainer` checkpoint at ``ckpt_dir/main_ep_<N>.pt``.
+
+        Also prunes the checkpoint directory down to the most-recent
+        ``retention_count`` ``main_ep_*.pt`` files (always preserving
+        ``best.pt`` / ``best.json``) so a long training run doesn't fill
+        the disk. Failures to delete are logged via telemetry but never
+        propagated -- the just-written checkpoint is still useful.
+        """
         meta = dict(metadata or {})
         meta.update(
             {
@@ -365,7 +404,13 @@ class Trainer:
         )
         path = self.tcfg.checkpoint_dir / f"main_ep_{int(episode)}.pt"
         path.parent.mkdir(parents=True, exist_ok=True)
-        return Path(self.mappo.save(path, metadata=meta))
+        saved = Path(self.mappo.save(path, metadata=meta))
+        # Track the most recent on-disk checkpoint so the best-promotion
+        # branch can copy it as a single atomic op.
+        self._latest_per_episode_ckpt: Path = saved
+        with contextlib.suppress(Exception):
+            self._prune_old_checkpoints()
+        return saved
 
     def load_checkpoint(self, path: Path) -> dict[str, Any]:
         """Restore the :class:`MAPPOTrainer` state. Returns the saved metadata."""
@@ -377,6 +422,167 @@ class Trainer:
         if "env_steps" in meta:
             self.env_steps = int(meta["env_steps"])
         return dict(meta)
+
+    # ------------------------------------------------------------------
+    # Best-checkpoint promotion + retention
+    # ------------------------------------------------------------------
+
+    def _best_root(self) -> Path:
+        """Repo-wide ``models/checkpoints`` root for shared ``best.pt``.
+
+        We promote into the repo-shared root (parent of the run-specific
+        ``checkpoint_dir``) so the API's ``best`` policy spec can find one
+        deterministic file regardless of which run produced it.
+        """
+        # checkpoint_dir = models/checkpoints/<run>. We want models/checkpoints.
+        return self.tcfg.checkpoint_dir.parent
+
+    def _load_best_score_from_disk(self) -> None:
+        """Read the persisted best.json (if any) so we don't downgrade on resume."""
+        info_path = self._best_root() / "best.json"
+        if not info_path.is_file():
+            return
+        try:
+            raw = json.loads(info_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        try:
+            self._best_score = float(raw.get("score", float("-inf")))
+            self._best_episode = int(raw.get("episode", -1))
+        except (TypeError, ValueError):
+            # Corrupted file; ignore and start fresh.
+            self._best_score = float("-inf")
+            self._best_episode = -1
+
+    @staticmethod
+    def _compute_combined_score(eval_results: dict[str, EvalResult]) -> float:
+        """Mean winrate across all evaluated baselines (default scoring).
+
+        Treating every baseline equally is a deliberately simple V1 choice
+        so we don't have to hand-tune weights. Returns ``-inf`` when there
+        are no usable results so ``_maybe_promote_best`` correctly skips
+        promotion.
+        """
+        winrates: list[float] = []
+        for res in eval_results.values():
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
+                winrates.append(float(res.yellow_winrate))
+        if not winrates:
+            return float("-inf")
+        return float(sum(winrates) / len(winrates))
+
+    def _maybe_promote_best(self, eval_results: dict[str, EvalResult]) -> None:
+        """Copy the latest checkpoint to ``best.pt`` when its score improves.
+
+        Source preference: the most recently written ``main_ep_*.pt`` from
+        this run. When ``save_checkpoint`` hasn't fired yet (eval interval
+        is shorter than checkpoint interval) we fall back to writing a
+        fresh ``best.pt`` directly via the mappo trainer so the file
+        always reflects current weights.
+        """
+        score = self._compute_combined_score(eval_results)
+        if score == float("-inf"):
+            return
+        if score <= self._best_score:
+            return
+
+        best_root = self._best_root()
+        best_root.mkdir(parents=True, exist_ok=True)
+        best_pt = best_root / "best.pt"
+        best_sidecar = best_root / "best.json"
+
+        src = self._latest_per_episode_ckpt
+        if src is not None and src.is_file():
+            try:
+                shutil.copy2(src, best_pt)
+            except OSError:
+                # Fall back to a fresh save if copy fails (rare on Windows
+                # when the file is being read by another process).
+                src = None
+
+        if src is None or not best_pt.is_file():
+            # No fresh source ckpt -- write current weights directly.
+            try:
+                self.mappo.save(
+                    best_pt,
+                    metadata={
+                        "kind": "best",
+                        "episode": int(self.episode_count),
+                        "update_step": int(self.update_step),
+                        "env_steps": int(self.env_steps),
+                        "score": float(score),
+                        "scoring": "mean_winrate_vs_baselines",
+                        "run_name": self.tcfg.run_name,
+                        "timestamp": float(time.time()),
+                    },
+                )
+            except Exception:
+                return
+
+        # Always (re)write the human-readable sidecar so the API can
+        # surface metadata even when best.pt was produced via shutil.copy2.
+        sidecar_payload: dict[str, Any] = {
+            "kind": "best",
+            "episode": int(self.episode_count),
+            "update_step": int(self.update_step),
+            "env_steps": int(self.env_steps),
+            "score": float(score),
+            "scoring": "mean_winrate_vs_baselines",
+            "run_name": self.tcfg.run_name,
+            "source_checkpoint": str(src) if src is not None else None,
+            "per_baseline": {
+                str(name): float(getattr(res, "yellow_winrate", float("nan")))
+                for name, res in eval_results.items()
+            },
+            "timestamp": float(time.time()),
+        }
+        with contextlib.suppress(OSError):
+            best_sidecar.write_text(
+                json.dumps(sidecar_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+        self._best_score = float(score)
+        self._best_episode = int(self.episode_count)
+
+        with contextlib.suppress(Exception):
+            self.telemetry.log_text(
+                "best_checkpoint",
+                f"score={score:.4f} ep={self.episode_count} -> {best_pt}",
+                step=self.update_step,
+            )
+
+    def _prune_old_checkpoints(self) -> None:
+        """Keep only the ``retention_count`` newest ``main_ep_*.pt`` files.
+
+        Always preserves the shared ``best.pt`` / ``best.json`` (which live
+        in the parent ``models/checkpoints`` directory anyway, but be
+        defensive). Each deleted .pt is paired with its ``.pt.json`` and
+        ``.json`` sidecars so the directory stays tidy.
+        """
+        keep = int(self.tcfg.retention_count)
+        if keep <= 0:
+            return
+        ckpt_dir = self.tcfg.checkpoint_dir
+        if not ckpt_dir.is_dir():
+            return
+        files = [p for p in ckpt_dir.glob("main_ep_*.pt") if p.is_file() and p.name not in ("best.pt",)]
+        if len(files) <= keep:
+            return
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        to_delete = files[keep:]
+        for victim in to_delete:
+            with contextlib.suppress(OSError):
+                victim.unlink()
+            # mappo.save writes `<stem>.pt.json` (not `<stem>.json`) so try
+            # both sidecar naming conventions for safety.
+            for sidecar in (
+                victim.with_suffix(victim.suffix + ".json"),
+                victim.with_suffix(".json"),
+            ):
+                if sidecar.is_file():
+                    with contextlib.suppress(OSError):
+                        sidecar.unlink()
 
     # ------------------------------------------------------------------
     # Internals
