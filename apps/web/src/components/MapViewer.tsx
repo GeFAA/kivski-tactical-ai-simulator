@@ -878,28 +878,17 @@ const refreshPlayerVisuals = (
       .stroke({ color: 0xffffff, width: 0.18, alpha: 0.85 });
   }
 
-  // Facing arrow (white triangle on body edge in facing direction).
+  // Facing arrow (white triangle on body edge). Drawn pointing +x in
+  // local coords; the ticker rotates `nodes.facing.rotation = a.facing`
+  // per frame so the arrow tracks facing changes between visual-key
+  // rebuilds. Mirrors how `weaponLayer.rotation` is applied.
   nodes.facing.clear();
   if (a.isAlive) {
-    const cx = Math.cos(a.facing);
-    const cy = Math.sin(a.facing);
-    const tipX = cx * (r + 0.7);
-    const tipY = cy * (r + 0.7);
-    const baseX = cx * (r + 0.05);
-    const baseY = cy * (r + 0.05);
-    // Perpendicular to facing for the triangle base.
-    const nx = -cy;
-    const ny = cx;
+    const tipX = r + 0.7;
+    const baseX = r + 0.05;
     const halfW = 0.42;
     nodes.facing
-      .poly([
-        tipX,
-        tipY,
-        baseX + nx * halfW,
-        baseY + ny * halfW,
-        baseX - nx * halfW,
-        baseY - ny * halfW,
-      ])
+      .poly([tipX, 0, baseX, halfW, baseX, -halfW])
       .fill({ color: 0xffffff, alpha: 0.95 });
   }
 
@@ -1139,8 +1128,12 @@ const ingestPlayersSnapshot = (
     // Facing is *cheap* (just a transform), update each snapshot so the
     // weapon snaps to the new aim direction without re-running the
     // visual-key path.
-    if (a.isAlive && nodes.weaponLayer.visible) {
-      nodes.weaponLayer.rotation = a.facing;
+    if (a.isAlive) {
+      // Facing arrow tracks per-frame even when no visual rebuild fires.
+      nodes.facing.rotation = a.facing;
+      if (nodes.weaponLayer.visible) {
+        nodes.weaponLayer.rotation = a.facing;
+      }
     }
   }
 
