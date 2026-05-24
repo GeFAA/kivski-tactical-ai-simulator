@@ -11,7 +11,127 @@ import MatchSetupModal from "@/components/MatchSetupModal";
 
 const SPEEDS = [0.5, 1, 2, 4, 16];
 
+const SETTINGS_ICON = (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.8"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+/**
+ * Simple-mode footer: just play/pause, a speed picker, and a settings
+ * shortcut. Everything else (training, checkpoints, match setup) lives
+ * in the settings drawer. Keeps the default view from being "voll
+ * geschissen" with debug controls a non-technical user can't parse.
+ */
+const SimpleBottomControls = () => {
+  const paused = useStore((s) => s.paused);
+  const togglePaused = useStore((s) => s.togglePaused);
+  const speed = useStore((s) => s.speed);
+  const setSpeed = useStore((s) => s.setSpeed);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const send = async (
+    label: string,
+    body: Parameters<typeof postCommand>[0],
+  ) => {
+    setBusy(true);
+    setError(null);
+    const r = await postCommand(body);
+    setBusy(false);
+    if (!r.ok) setError(`${label}: ${r.error}`);
+  };
+
+  const onPlayPause = async () => {
+    togglePaused();
+    await send(paused ? "resume" : "pause", {
+      type: paused ? "resume" : "pause",
+    });
+  };
+
+  const onSpeed = async (s: number) => {
+    setSpeed(s);
+    await send(`speed ${s}x`, { type: "set_speed", speed: s });
+  };
+
+  return (
+    <footer className="flex h-14 items-center justify-between gap-3 border-t border-kivski-border bg-kivski-panel px-4">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="btn btn-primary min-w-[6rem]"
+          onClick={onPlayPause}
+          disabled={busy}
+        >
+          {paused ? "Play" : "Pause"}
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-widest text-kivski-muted">
+          Speed
+        </span>
+        <div className="flex gap-0.5">
+          {SPEEDS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onSpeed(s)}
+              className={`btn px-2 py-1 text-xs ${
+                speed === s
+                  ? "border-kivski-defender text-kivski-defender"
+                  : ""
+              }`}
+            >
+              {s}x
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {error && (
+          <span
+            className="truncate text-[10px] text-kivski-hp-low"
+            title={error}
+          >
+            {error}
+          </span>
+        )}
+        <button
+          type="button"
+          aria-label="Settings"
+          onClick={() => setSettingsOpen(true)}
+          title="Open settings (Match · Training · View · About)"
+          className="flex h-9 items-center gap-1.5 rounded border border-kivski-border bg-kivski-panel-2 px-3 text-xs text-kivski-text transition-colors hover:border-kivski-defender hover:text-kivski-defender"
+        >
+          {SETTINGS_ICON}
+          <span>Settings</span>
+        </button>
+      </div>
+    </footer>
+  );
+};
+
 const BottomControls = () => {
+  const uiMode = useStore((s) => s.uiMode);
+  if (uiMode === "simple") return <SimpleBottomControls />;
+  return <AdvancedBottomControls />;
+};
+
+const AdvancedBottomControls = () => {
   const paused = useStore((s) => s.paused);
   const togglePaused = useStore((s) => s.togglePaused);
   const speed = useStore((s) => s.speed);

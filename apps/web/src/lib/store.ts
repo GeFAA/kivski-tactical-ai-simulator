@@ -94,6 +94,22 @@ interface MatchState {
 
 export type RightTab = "events" | "inspector" | "comms" | "metrics" | "sys";
 
+/**
+ * Top-level UI mode. ``simple`` strips the viewer down to map + score +
+ * round-timer + a single "events" hint so non-technical users aren't
+ * confronted with debug toggles, inspector panels, and training
+ * dashboards. ``advanced`` restores the original power-user layout
+ * (right sidebar, training panel, debug overlays, all controls).
+ *
+ * Persisted in localStorage under ``kivski-ui-mode`` so the choice
+ * survives page reloads. Default is ``simple`` for first-time visitors
+ * — the gear-icon settings drawer is the affordance for switching.
+ */
+export type UiMode = "simple" | "advanced";
+
+/** Tabs inside the settings drawer. */
+export type SettingsTab = "match" | "training" | "view" | "about";
+
 interface UIState {
   selectedAgentId: string | null;
   rightTab: RightTab;
@@ -112,6 +128,12 @@ interface UIState {
    * re-run via dependency comparison.
    */
   matchToken: number;
+  /** Top-level UI density preset. See ``UiMode`` for details. */
+  uiMode: UiMode;
+  /** Open/closed state of the gear-icon settings drawer. */
+  settingsOpen: boolean;
+  /** Last-active tab inside the settings drawer (persisted). */
+  settingsTab: SettingsTab;
 }
 
 interface InspectionState {
@@ -200,6 +222,12 @@ interface Actions {
    * increments `matchToken` so `useEffect` deps differ.
    */
   setMatchToken: () => void;
+  /** Switch between simple (default) and advanced UI density. */
+  setUiMode: (mode: UiMode) => void;
+  /** Open or close the gear-icon settings drawer. */
+  setSettingsOpen: (open: boolean) => void;
+  /** Switch the active tab inside the settings drawer. */
+  setSettingsTab: (tab: SettingsTab) => void;
 
   reset: () => void;
 }
@@ -240,6 +268,9 @@ const initialUI: UIState = {
   speed: 1,
   paused: false,
   matchToken: 0,
+  uiMode: "simple",
+  settingsOpen: false,
+  settingsTab: "match",
 };
 
 const initialInspection: InspectionState = { byAgent: {}, attentionWeights: {} };
@@ -300,6 +331,12 @@ const computeEconomySample = (
 // and would point at dead data on the next page load. The debug toggles
 // + playback speed + active tab are *user preferences* and survive
 // across reloads via localStorage.
+//
+// ``uiMode`` (simple/advanced) and ``settingsTab`` (last-active tab in
+// the drawer) are also persisted so a user who switched to Advanced is
+// not yanked back to Simple on reload. ``uiMode`` is additionally
+// mirrored to a dedicated ``kivski-ui-mode`` key by ``setUiMode`` for
+// easy DevTools inspection.
 type PersistedUI = Pick<
   AppState,
   | "showFov"
@@ -309,10 +346,31 @@ type PersistedUI = Pick<
   | "showHeatmap"
   | "speed"
   | "rightTab"
+  | "uiMode"
+  | "settingsTab"
 >;
 
 const PERSIST_STORAGE_KEY = "kivski-ui-state";
-const PERSIST_STORAGE_VERSION = 1;
+// Version 2 introduced uiMode / settingsTab. Migrate by simply dropping
+// the old state — defaults are reasonable for the new fields.
+const PERSIST_STORAGE_VERSION = 2;
+
+/**
+ * Read the dedicated ``kivski-ui-mode`` key (written by ``setUiMode``)
+ * so it overrides the bundled persist payload. Lets a user (or a test
+ * harness) set the mode explicitly via DevTools without touching the
+ * larger blob. Returns ``null`` when the key is absent / invalid.
+ */
+const readUiModeOverride = (): UiMode | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem("kivski-ui-mode");
+    if (raw === "simple" || raw === "advanced") return raw;
+    return null;
+  } catch {
+    return null;
+  }
+};
 
 export const useStore = create<AppState>()(persist((set) => ({
   ...initialMatch,
@@ -469,6 +527,21 @@ export const useStore = create<AppState>()(persist((set) => ({
   setPaused: (p) => set({ paused: p }),
   togglePaused: () => set((s) => ({ paused: !s.paused })),
   setMatchToken: () => set((s) => ({ matchToken: s.matchToken + 1 })),
+  setUiMode: (mode) => {
+    set({ uiMode: mode });
+    // Mirror the choice to a dedicated, easy-to-discover localStorage
+    // key as well so the value is obvious in DevTools and a future
+    // settings-import flow can pick it up without parsing the larger
+    // ``kivski-ui-state`` blob. Best-effort: a Safari private-mode
+    // QuotaExceeded should not break the UI toggle.
+    try {
+      window.localStorage.setItem("kivski-ui-mode", mode);
+    } catch {
+      /* ignore */
+    }
+  },
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  setSettingsTab: (tab) => set({ settingsTab: tab }),
 
   reset: () =>
     set({
@@ -494,7 +567,22 @@ export const useStore = create<AppState>()(persist((set) => ({
     showHeatmap: state.showHeatmap,
     speed: state.speed,
     rightTab: state.rightTab,
+    uiMode: state.uiMode,
+    settingsTab: state.settingsTab,
   }),
+  merge: (persisted, current) => {
+    // Honour the dedicated ``kivski-ui-mode`` localStorage key if it
+    // disagrees with the bundled persist payload — this lets us treat
+    // that key as the source of truth (it's the one ``setUiMode``
+    // writes, and the one a user is most likely to inspect / tweak).
+    const override = readUiModeOverride();
+    const merged = {
+      ...current,
+      ...(persisted as Partial<AppState> | undefined),
+    } as AppState;
+    if (override !== null) merged.uiMode = override;
+    return merged;
+  },
 }));
 
 // ---------- Selector helpers ----------

@@ -216,7 +216,99 @@ const WinrateStrip = () => {
   );
 };
 
-const MatchHeader = () => {
+/**
+ * Top-right gear icon. Opens the settings drawer (Match / Training /
+ * View / About). Rendered in both Simple and Advanced headers so the
+ * affordance is always reachable.
+ */
+const SettingsButton = () => {
+  const open = useStore((s) => s.settingsOpen);
+  const setOpen = useStore((s) => s.setSettingsOpen);
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(!open)}
+      aria-label="Settings"
+      title="Settings (Match · Training · View · About)"
+      className="flex h-9 w-9 items-center justify-center rounded border border-kivski-border bg-kivski-panel-2 text-kivski-text transition-colors hover:border-kivski-defender hover:text-kivski-defender"
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+      </svg>
+    </button>
+  );
+};
+
+/**
+ * Compact header used in Simple mode. Strips the policy badges, WR
+ * strip, map / tick / phase chips, and connection dot down to the bare
+ * "Round X · MM:SS · Y:B" tagline so non-technical users aren't
+ * confronted with debug noise. The branding and gear icon stay
+ * visible on both edges as the user's anchor points.
+ */
+const SimpleHeader = () => {
+  const round = useStore((s) => s.round);
+  const phase = useStore((s) => s.phase);
+  const secondsLeft = useStore((s) => s.secondsLeft);
+  const score = useStore((s) => s.score);
+
+  const roundLabel = formatRound(round, phase);
+  const timerLabel = phase === "match_over" ? "--:--" : formatMmSs(secondsLeft);
+
+  return (
+    <header className="flex h-14 items-center justify-between border-b border-kivski-border bg-kivski-panel px-4">
+      <div className="flex items-center gap-2">
+        <div className="h-6 w-6 rounded bg-gradient-to-br from-kivski-attacker to-kivski-defender" />
+        <div className="leading-tight">
+          <div className="text-sm font-semibold tracking-wide">Kivski</div>
+          <div className="text-[10px] uppercase tracking-widest text-kivski-muted">
+            Tactical AI Sim
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 text-kivski-text">
+        <span className="text-[10px] uppercase tracking-widest text-kivski-muted">
+          Round
+        </span>
+        <span className="stat text-base font-semibold">{roundLabel}</span>
+        <span className="text-kivski-muted">·</span>
+        <span className="stat tabular-nums text-base font-semibold">
+          {timerLabel}
+        </span>
+        <span className="text-kivski-muted">·</span>
+        <span className="stat text-lg font-bold text-kivski-attacker">
+          {score.attacker.toString().padStart(2, "0")}
+        </span>
+        <span className="text-kivski-muted">:</span>
+        <span className="stat text-lg font-bold text-kivski-defender">
+          {score.defender.toString().padStart(2, "0")}
+        </span>
+      </div>
+
+      <SettingsButton />
+    </header>
+  );
+};
+
+/**
+ * Power-user header (Advanced mode). Identical to the V1 layout: round,
+ * timer, score, phase, map, tick, connection, WR strip, plus the
+ * per-team policy badges and reload toast. The gear button is added
+ * on the right so the settings drawer is also reachable from here.
+ */
+const AdvancedHeader = () => {
   const round = useStore((s) => s.round);
   const phase = useStore((s) => s.phase);
   const secondsLeft = useStore((s) => s.secondsLeft);
@@ -293,6 +385,7 @@ const MatchHeader = () => {
             />
             <span>{connected ? "live" : "offline"}</span>
           </div>
+          <SettingsButton />
         </div>
       </div>
 
@@ -327,6 +420,11 @@ const MatchHeader = () => {
       </div>
     </header>
   );
+};
+
+const MatchHeader = () => {
+  const uiMode = useStore((s) => s.uiMode);
+  return uiMode === "simple" ? <SimpleHeader /> : <AdvancedHeader />;
 };
 
 export default MatchHeader;

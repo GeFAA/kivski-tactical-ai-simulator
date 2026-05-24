@@ -175,9 +175,64 @@ const TeamBlock = ({
   );
 };
 
+/**
+ * Compact team summary used in Simple mode. One row per team with the
+ * team dot, the human-readable name, and the alive count. No per-agent
+ * cards, no economy bar, no weapon list — those live in Advanced mode.
+ */
+const SimpleTeamRow = ({
+  team,
+  players,
+}: {
+  team: Team;
+  players: AgentSnapshot[];
+}) => {
+  const aliveCount = players.filter((p) => p.isAlive).length;
+  const currentSide = teamCurrentSide(players);
+  const roleHint =
+    currentSide === "attacker"
+      ? "attacking"
+      : currentSide === "defender"
+        ? "defending"
+        : "—";
+  return (
+    <div className="panel flex items-center justify-between px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className={`h-2.5 w-2.5 rounded-full ${TEAM_DOT_CLASS[team]}`} />
+        <div className="leading-tight">
+          <div className={`text-sm font-semibold ${TEAM_COLOR_CLASS[team]}`}>
+            {TEAM_LABEL[team]}
+          </div>
+          <div className="text-[10px] uppercase tracking-widest text-kivski-muted">
+            {roleHint}
+          </div>
+        </div>
+      </div>
+      <div className="text-right leading-tight">
+        <div className="stat text-base font-semibold text-kivski-text">
+          {aliveCount}/{players.length}
+        </div>
+        <div className="text-[10px] uppercase tracking-widest text-kivski-muted">
+          alive
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const LeftSidebar = () => {
   const yellow = useStore(selectYellowTeam);
   const blue = useStore(selectBlueTeam);
+  const uiMode = useStore((s) => s.uiMode);
+
+  if (uiMode === "simple") {
+    return (
+      <aside className="flex min-h-0 flex-col gap-2">
+        <SimpleTeamRow team="yellow" players={yellow} />
+        <SimpleTeamRow team="blue" players={blue} />
+      </aside>
+    );
+  }
 
   return (
     <aside className="flex min-h-0 flex-col gap-2">

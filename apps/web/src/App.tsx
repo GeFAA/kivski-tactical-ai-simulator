@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import MatchHeader from "@/components/MatchHeader";
 import LeftSidebar from "@/components/LeftSidebar";
 import RightSidebar from "@/components/RightSidebar";
@@ -7,8 +7,127 @@ import BottomControls from "@/components/BottomControls";
 import DebugToggles from "@/components/DebugToggles";
 import RoundTimeline from "@/components/RoundTimeline";
 import TrainingPanel from "@/components/TrainingPanel";
-import { subscribeMatch } from "@/lib/api-client";
+import SettingsDrawer from "@/components/SettingsDrawer";
+import { getTrainingStatus, subscribeMatch } from "@/lib/api-client";
 import { useStore } from "@/lib/store";
+
+/**
+ * Subtle bottom-right pill rendered in Simple mode while training is
+ * running. Clicking opens the settings drawer on the Training tab so a
+ * curious user can see what's going on without learning the rest of the
+ * Advanced UI. Stays hidden when training is idle (no clutter).
+ */
+const TrainingPill = () => {
+  const uiMode = useStore((s) => s.uiMode);
+  const running = useStore((s) => s.trainingStatus.running);
+  const episode = useStore((s) => s.trainingStatus.episode);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const setSettingsTab = useStore((s) => s.setSettingsTab);
+
+  if (uiMode !== "simple" || !running) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setSettingsTab("training");
+        setSettingsOpen(true);
+      }}
+      className="fixed bottom-20 right-4 z-30 inline-flex items-center gap-2 rounded-full border border-kivski-defender/40 bg-kivski-panel/95 px-3 py-1.5 text-[11px] text-kivski-text shadow-lg backdrop-blur transition-colors hover:border-kivski-defender hover:bg-kivski-panel"
+      title="Training is running. Click to see details."
+    >
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-kivski-hp animate-pulse-slow" />
+      <span className="font-medium text-kivski-defender">Training…</span>
+      <span className="stat text-kivski-muted">ep {episode}</span>
+    </button>
+  );
+};
+
+const ONBOARDED_KEY = "kivski-onboarded";
+
+/**
+ * First-visit teaching moment: a subtle balloon pointing the user at
+ * the settings gear so they discover Advanced mode + training control.
+ * Auto-dismisses after the user clicks "Got it", or whenever they open
+ * the drawer themselves. localStorage-flagged so it never repeats.
+ */
+const OnboardingTooltip = () => {
+  const uiMode = useStore((s) => s.uiMode);
+  const settingsOpen = useStore((s) => s.settingsOpen);
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (uiMode !== "simple") return;
+    try {
+      const seen = window.localStorage.getItem(ONBOARDED_KEY);
+      if (seen === "true") return;
+    } catch {
+      return;
+    }
+    // Slight delay so the bubble doesn't pop in at the same instant the
+    // header finishes its first paint.
+    const t = window.setTimeout(() => setShow(true), 800);
+    return () => window.clearTimeout(t);
+  }, [uiMode]);
+
+  // Auto-dismiss the moment the user opens the drawer on their own.
+  useEffect(() => {
+    if (!settingsOpen || !show) return;
+    setShow(false);
+    try {
+      window.localStorage.setItem(ONBOARDED_KEY, "true");
+    } catch {
+      /* ignore */
+    }
+  }, [settingsOpen, show]);
+
+  if (!show) return null;
+
+  const dismiss = () => {
+    setShow(false);
+    try {
+      window.localStorage.setItem(ONBOARDED_KEY, "true");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return (
+    <div
+      className="fixed right-3 top-16 z-30 w-72 rounded-lg border border-kivski-defender/40 bg-kivski-panel/95 p-3 text-xs shadow-2xl backdrop-blur"
+      role="dialog"
+      aria-label="Welcome tip"
+    >
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-widest text-kivski-defender">
+          Welcome to Kivski
+        </span>
+        <button
+          type="button"
+          onClick={dismiss}
+          className="text-kivski-muted hover:text-kivski-text"
+          aria-label="dismiss-onboarding"
+        >
+          {"✕"}
+        </button>
+      </div>
+      <p className="leading-relaxed text-kivski-text">
+        Click the gear icon on the top-right for{" "}
+        <span className="font-semibold text-kivski-defender">Advanced</span>{" "}
+        mode, training controls, and view options.
+      </p>
+      <div className="mt-2 flex justify-end">
+        <button
+          type="button"
+          onClick={dismiss}
+          className="btn px-3 py-1 text-[11px]"
+        >
+          Got it
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const App = () => {
   const setConnected = useStore((s) => s.setConnected);
@@ -29,6 +148,34 @@ const App = () => {
   // comparison match — it forces this effect to re-run, which tears down
   // the current WebSocket and opens a fresh one against the new match.
   const matchToken = useStore((s) => s.matchToken);
+  // Top-level UI density: drives whether the right sidebar, training
+  // panel, round timeline, and debug-toggles overlay are shown.
+  const uiMode = useStore((s) => s.uiMode);
+
+  // Low-frequency poll of /api/training/status so the simple-mode
+  // training pill knows when a job is running. TrainingPanel does its
+  // own poll when mounted, but it lives only in Advanced mode — without
+  // this fallback poll, a user in Simple mode would never see the pill
+  // (the running flag stays false until the first WS metrics_sample
+  // frame, which can lag by tens of seconds in turbo configs).
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const s = await getTrainingStatus();
+      if (!alive || !s) return;
+      setTrainingStatus({
+        running: s.running,
+        episode: s.episode,
+        totalEpisodes: s.totalEpisodes,
+      });
+    };
+    void tick();
+    const id = window.setInterval(tick, 5_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [setTrainingStatus]);
 
   // Wire up the live match WebSocket once at mount. The handle's `.close()`
   // tears down the reconnect loop on hot-reload / unmount.
@@ -150,33 +297,49 @@ const App = () => {
     setAutoReload,
   ]);
 
+  const isAdvanced = uiMode === "advanced";
+
+  // Grid template:
+  //   Advanced: 3 columns (sidebar | map | right tabs) — power layout
+  //   Simple  : 2 columns (slim sidebar | map) — clean, map-first
+  const gridCols = isAdvanced
+    ? "grid-cols-[18rem_minmax(0,1fr)_22rem]"
+    : "grid-cols-[14rem_minmax(0,1fr)]";
+
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-kivski-bg text-kivski-text">
-      {/* Header: round/score/phase */}
+      {/* Header: round/score/phase (compact in Simple, full in Advanced) */}
       <MatchHeader />
 
-      {/* Body: 3-column layout */}
-      <div className="grid min-h-0 flex-1 grid-cols-[18rem_minmax(0,1fr)_22rem] gap-2 p-2">
+      {/* Body */}
+      <div className={`grid min-h-0 flex-1 gap-2 p-2 ${gridCols}`}>
         <LeftSidebar />
 
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           <div className="panel relative flex min-h-0 flex-1 overflow-hidden">
             <MapViewer />
-            <div className="pointer-events-none absolute right-2 top-2">
-              <div className="pointer-events-auto">
-                <DebugToggles />
+            {isAdvanced && (
+              <div className="pointer-events-none absolute right-2 top-2">
+                <div className="pointer-events-auto">
+                  <DebugToggles />
+                </div>
               </div>
-            </div>
+            )}
           </div>
-          <RoundTimeline />
-          <TrainingPanel />
+          {isAdvanced && <RoundTimeline />}
+          {isAdvanced && <TrainingPanel />}
         </div>
 
-        <RightSidebar />
+        {isAdvanced && <RightSidebar />}
       </div>
 
-      {/* Footer: playback + training controls */}
+      {/* Footer: playback + training controls (slim in Simple mode) */}
       <BottomControls />
+
+      {/* Global overlays — always mounted */}
+      <SettingsDrawer />
+      <TrainingPill />
+      <OnboardingTooltip />
     </div>
   );
 };
