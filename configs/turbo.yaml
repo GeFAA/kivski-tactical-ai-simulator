@@ -116,11 +116,20 @@ reward_shaping:
   pointless_death: -0.50
   map_control_per_tile: 0.0020
 
-# Reward-curriculum DISABLED here too -- all reward buckets active from
-# step 0 so 5v5 agents learn the full reward landscape immediately.
+# v0.4.2: reward_curriculum ENABLED. The trainer hard-disables side-switching
+# (YELLOW is always attacker), and untrained policy never plants → every
+# match TIMEOUTs → defender (random/scripted/main) wins automatically →
+# WR_yellow == 0 by mathematical guarantee. To break this, give YELLOW a
+# learnable path that doesn't require plant: stage 1 "killshoot" rewards
+# only kill+survive+damage, so attacker can win by ELIMINATING defenders
+# (RoundOutcome.DEFENDERS_ELIM) instead of needing a successful plant.
+# Once shooting is learned (stage 2), bomb mechanics get added.
 reward_curriculum:
-  enabled: false
-  stages: []
+  enabled: true
+  stages:
+    - { name: "killshoot", episodes: 1500,  features: ["kill", "survive", "damage_dealt", "damage_received"] }
+    - { name: "objective", episodes: 5000,  features: ["kill", "survive", "damage_dealt", "damage_received", "bomb_plant", "bomb_defuse", "bomb_pickup", "useful_trade"] }
+    - { name: "full",      episodes: -1,    features: ["all"] }
 
 telemetry:
   backend: csv
