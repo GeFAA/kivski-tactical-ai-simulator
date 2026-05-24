@@ -285,6 +285,28 @@ export interface TrainingStatus {
    * started (0 / undefined when idle).
    */
   currentSessionSeconds?: number;
+  /**
+   * Aggregated *simulated* agent game-time across every recorded run on
+   * disk. Computed as Σ_run env_steps × frame_skip × tick_dt — i.e. how
+   * many seconds of in-game experience the agent has accumulated when
+   * you count every parallel env. Typically dwarfs wall-clock by a
+   * factor of (num_envs × frame_skip), e.g. 48 envs × 4 skip × 10 Hz
+   * yields ~7700× wall-clock. ``undefined`` on older backends.
+   */
+  totalSimulatedSeconds?: number;
+  /**
+   * Same accounting as ``totalSimulatedSeconds`` but scoped to the
+   * currently-running trainer process. 0 / undefined when idle.
+   */
+  currentSessionSimulatedSeconds?: number;
+  /** Cumulative env_steps across all runs (Σ env_steps). */
+  totalEnvSteps?: number;
+  /** Number of parallel envs the current trainer is using. */
+  currentSessionNumEnvs?: number;
+  /** Frame-skip in effect for the current trainer. */
+  currentSessionFrameSkip?: number;
+  /** Engine tick duration (seconds) in effect for the current trainer. */
+  currentSessionTickDt?: number;
 }
 
 export interface MetricsSample {

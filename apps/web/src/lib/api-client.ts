@@ -406,6 +406,16 @@ interface RawTrainingStatus {
   training_clock_total_seconds?: number;
   /** Wall-clock since the running trainer started; 0 when idle. */
   current_session_seconds?: number;
+  /** Aggregated agent game-time across all runs (env_steps × frame_skip × tick_dt). */
+  total_simulated_seconds?: number;
+  /** Same aggregation, scoped to the currently running trainer. */
+  current_session_simulated_seconds?: number;
+  /** Total env_steps across all runs (Σ env_steps). */
+  total_env_steps?: number;
+  /** Per-env / cadence diagnostics for the running trainer. */
+  current_session_num_envs?: number;
+  current_session_frame_skip?: number;
+  current_session_tick_dt?: number;
 }
 
 /**
@@ -450,22 +460,28 @@ export async function getTrainingStatus(): Promise<TrainingStatus | null> {
     if (!res.ok) return null;
     const raw = (await res.json()) as RawTrainingStatus | null;
     if (!raw || typeof raw !== "object") return null;
-    const totalTrainedSeconds =
-      typeof raw.training_clock_total_seconds === "number" &&
-      Number.isFinite(raw.training_clock_total_seconds)
-        ? raw.training_clock_total_seconds
-        : undefined;
-    const currentSessionSeconds =
-      typeof raw.current_session_seconds === "number" &&
-      Number.isFinite(raw.current_session_seconds)
-        ? raw.current_session_seconds
-        : undefined;
+    const num = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) ? v : undefined;
+    const totalTrainedSeconds = num(raw.training_clock_total_seconds);
+    const currentSessionSeconds = num(raw.current_session_seconds);
+    const totalSimulatedSeconds = num(raw.total_simulated_seconds);
+    const currentSessionSimulatedSeconds = num(raw.current_session_simulated_seconds);
+    const totalEnvSteps = num(raw.total_env_steps);
+    const currentSessionNumEnvs = num(raw.current_session_num_envs);
+    const currentSessionFrameSkip = num(raw.current_session_frame_skip);
+    const currentSessionTickDt = num(raw.current_session_tick_dt);
     return {
       running: Boolean(raw.running),
       episode: 0, // backend does not track in-flight episode for V1; comes via WS metrics_sample
       totalEpisodes: typeof raw.episodes === "number" ? raw.episodes : 0,
       totalTrainedSeconds,
       currentSessionSeconds,
+      totalSimulatedSeconds,
+      currentSessionSimulatedSeconds,
+      totalEnvSteps,
+      currentSessionNumEnvs,
+      currentSessionFrameSkip,
+      currentSessionTickDt,
     };
   } catch {
     return null;

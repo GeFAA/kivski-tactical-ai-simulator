@@ -12,7 +12,7 @@ import {
   type TrainingConfigInfo,
   type TrainingGoal,
 } from "@/lib/api-client";
-import { formatDuration } from "@/lib/format";
+import { formatCompactNumber, formatDuration } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { SettingsTab, UiMode } from "@/lib/store";
 import MatchSetupModal from "@/components/MatchSetupModal";
@@ -552,6 +552,83 @@ const TrainingTab = () => {
             )}
           </div>
         )}
+        {/* Aggregated agent game-time — wall-clock × num_envs × frame_skip ×    */}
+        {/* tick_dt summed across every run on disk. This is the "feels-big"    */}
+        {/* number: a single hour of wall-clock training at 48 envs × 4 skip ×  */}
+        {/* 10 Hz produces ~80 days of simulated agent experience.              */}
+        {typeof trainingStatus.totalSimulatedSeconds === "number" &&
+          trainingStatus.totalSimulatedSeconds > 0 && (
+            <div
+              className="mt-1.5 rounded border border-kivski-defender/30 bg-kivski-defender/5 px-2 py-1.5"
+              title={
+                "Σ env_steps × frame_skip × tick_dt across every recorded run.\n" +
+                "= total seconds of simulated game-time experienced by the agents,\n" +
+                "accounting for every parallel env running in the background."
+              }
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-[9px] uppercase tracking-widest text-kivski-muted">
+                  Agent game-time experienced
+                </div>
+                {typeof trainingStatus.currentSessionSimulatedSeconds ===
+                  "number" &&
+                  trainingStatus.currentSessionSimulatedSeconds > 0 && (
+                    <div
+                      className="text-[9px] text-kivski-muted"
+                      title="This session's contribution to the total."
+                    >
+                      this run +{" "}
+                      <span className="stat text-kivski-text">
+                        {formatDuration(
+                          trainingStatus.currentSessionSimulatedSeconds,
+                        )}
+                      </span>
+                    </div>
+                  )}
+              </div>
+              <div className="stat mt-0.5 text-[14px] text-kivski-defender">
+                {formatDuration(trainingStatus.totalSimulatedSeconds)}
+              </div>
+              <div className="mt-0.5 text-[10px] leading-tight text-kivski-muted">
+                {(() => {
+                  const parts: string[] = [];
+                  if (
+                    typeof trainingStatus.currentSessionNumEnvs === "number" &&
+                    trainingStatus.currentSessionNumEnvs > 0
+                  ) {
+                    parts.push(
+                      `× ${Math.round(
+                        trainingStatus.currentSessionNumEnvs,
+                      )} parallel envs`,
+                    );
+                  }
+                  if (
+                    typeof trainingStatus.currentSessionFrameSkip === "number" &&
+                    trainingStatus.currentSessionFrameSkip > 0
+                  ) {
+                    parts.push(
+                      `frame-skip ${Math.round(
+                        trainingStatus.currentSessionFrameSkip,
+                      )}`,
+                    );
+                  }
+                  if (
+                    typeof trainingStatus.totalEnvSteps === "number" &&
+                    trainingStatus.totalEnvSteps > 0
+                  ) {
+                    parts.push(
+                      `Σ ${formatCompactNumber(
+                        trainingStatus.totalEnvSteps,
+                      )} env-steps`,
+                    );
+                  }
+                  return parts.length > 0
+                    ? parts.join(" · ")
+                    : "Aggregated across every recorded run.";
+                })()}
+              </div>
+            </div>
+          )}
         {resumeTarget?.available && (
           <p
             className="mt-1 text-[10px] leading-tight text-kivski-muted"

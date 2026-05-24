@@ -295,18 +295,29 @@ async def stop_training() -> dict[str, Any]:
     return {"stopped": True, "exit_code": job.exit_code}
 
 
-def _clock_snapshot(now: float, running_job: TrainingJob | None) -> dict[str, float]:
-    """Return ``{total_seconds, current_session_seconds}`` for the response.
+def _clock_snapshot(now: float, running_job: TrainingJob | None) -> dict[str, Any]:
+    """Return clock snapshot (wall-clock totals + simulated game-time aggregate).
 
     Ticks the persistent clock first so a polling client sees an
     up-to-date total even between background lifespan ticks. The
     in-process clock is thread-safe so multiple concurrent /status
     requests can't double-count.
+
+    The returned dict carries both the legacy wall-clock fields
+    (``total_seconds``, ``current_session_seconds``) and the new
+    aggregated simulated-time fields (``total_simulated_seconds``,
+    ``current_session_simulated_seconds``, plus diagnostic ``num_envs``
+    / ``frame_skip`` / ``tick_dt`` of the running session). Frontends
+    that haven't been updated simply ignore the extra keys.
     """
     clock = get_clock()
     clock.tick(now, running_job is not None)
     session_started = running_job.started_at if running_job is not None else None
-    return clock.to_dict(session_started_at=session_started, now_unix=now)
+    base = clock.to_dict(session_started_at=session_started, now_unix=now)
+    sim = clock.compute_total_simulated_seconds(
+        current_run_name=(running_job.run_name if running_job is not None else None),
+    )
+    return {**base, **sim}
 
 
 @router.get("/status")
@@ -347,6 +358,14 @@ async def training_status() -> dict[str, Any]:
             "last_crash_reason": crash_reason,
             "training_clock_total_seconds": clock["total_seconds"],
             "current_session_seconds": clock["current_session_seconds"],
+            "total_simulated_seconds": clock["total_simulated_seconds"],
+            "current_session_simulated_seconds": clock["current_session_simulated_seconds"],
+            "total_env_steps": clock["total_env_steps"],
+            "current_session_env_steps": clock["current_session_env_steps"],
+            "current_session_num_envs": clock["current_session_num_envs"],
+            "current_session_frame_skip": clock["current_session_frame_skip"],
+            "current_session_tick_dt": clock["current_session_tick_dt"],
+            "runs_scanned": clock["runs_scanned"],
         }
     return {
         "running": job.is_running(),
@@ -362,6 +381,14 @@ async def training_status() -> dict[str, Any]:
         "last_crash_reason": crash_reason,
         "training_clock_total_seconds": clock["total_seconds"],
         "current_session_seconds": clock["current_session_seconds"],
+        "total_simulated_seconds": clock["total_simulated_seconds"],
+        "current_session_simulated_seconds": clock["current_session_simulated_seconds"],
+        "total_env_steps": clock["total_env_steps"],
+        "current_session_env_steps": clock["current_session_env_steps"],
+        "current_session_num_envs": clock["current_session_num_envs"],
+        "current_session_frame_skip": clock["current_session_frame_skip"],
+        "current_session_tick_dt": clock["current_session_tick_dt"],
+        "runs_scanned": clock["runs_scanned"],
     }
 
 
@@ -373,6 +400,17 @@ async def training_clock() -> dict[str, Any]:
     ``models/logs/training_clock.json``). ``current_session_seconds`` is
     derived from the running trainer's ``started_at`` and is 0 when
     no trainer is currently live.
+
+    The simulated-game-time fields aggregate **agent-experienced**
+    seconds across every recorded run on disk:
+
+      ``total_simulated_seconds`` = Σ_run env_steps × frame_skip × tick_dt
+      ``current_session_simulated_seconds`` = same, but only for the
+      currently-running trainer process.
+
+    This is what the user actually cares about: with 48 parallel envs ×
+    4 frame-skip × 10 Hz a single wall-clock hour produces ~7700 hours
+    of agent game-time, and the user wants to see that big number.
     """
     job = REGISTRY.latest_training()
     running_job = job if (job is not None and job.is_running()) else None
@@ -385,6 +423,14 @@ async def training_clock() -> dict[str, Any]:
         "session_started_at": (
             float(running_job.started_at) if running_job is not None else 0.0
         ),
+        "total_simulated_seconds": snap["total_simulated_seconds"],
+        "current_session_simulated_seconds": snap["current_session_simulated_seconds"],
+        "total_env_steps": snap["total_env_steps"],
+        "current_session_env_steps": snap["current_session_env_steps"],
+        "current_session_num_envs": snap["current_session_num_envs"],
+        "current_session_frame_skip": snap["current_session_frame_skip"],
+        "current_session_tick_dt": snap["current_session_tick_dt"],
+        "runs_scanned": snap["runs_scanned"],
     }
 
 

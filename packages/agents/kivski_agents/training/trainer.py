@@ -751,6 +751,10 @@ class Trainer:
             # Consolidated "live" snapshot for the API broadcaster — keys
             # mirror the frontend MetricsSample / TrainingStatus contract
             # so the live viewer can render without any extra mapping.
+            # ``env_steps`` is the cumulative count of agent-environment
+            # transitions across the *currently running* trainer. The
+            # backend training_clock multiplies it by frame_skip × dt to
+            # turn wall-clock × parallel envs into "agent game-time".
             self.telemetry.log_dict(
                 {
                     "live/episode": float(self.episode_count),
@@ -760,6 +764,38 @@ class Trainer:
                     "live/entropy": float(loss.entropy),
                     "live/fps": float(fps),
                     "live/kl": float(loss.kl),
+                    "live/env_steps": float(self.env_steps),
+                    "live/num_envs": float(self.tcfg.num_envs),
+                    "live/frame_skip": float(
+                        getattr(self.active_cfg.simulation, "frame_skip", 1) or 1
+                    ),
+                    "live/tick_dt": float(
+                        1.0
+                        / max(
+                            1,
+                            int(getattr(self.active_cfg.simulation, "tick_rate_hz", 10)),
+                        )
+                    ),
+                },
+                step=self.update_step,
+            )
+            # Also surface env_steps + sim cadence under the ``train/`` namespace
+            # so historical scanners can pick the maximum per-run env_steps off
+            # the JSONL without having to parse checkpoint sidecars.
+            self.telemetry.log_dict(
+                {
+                    "train/env_steps": float(self.env_steps),
+                    "train/num_envs": float(self.tcfg.num_envs),
+                    "train/frame_skip": float(
+                        getattr(self.active_cfg.simulation, "frame_skip", 1) or 1
+                    ),
+                    "train/tick_dt": float(
+                        1.0
+                        / max(
+                            1,
+                            int(getattr(self.active_cfg.simulation, "tick_rate_hz", 10)),
+                        )
+                    ),
                 },
                 step=self.update_step,
             )
@@ -932,6 +968,12 @@ class Trainer:
             "team_size": int(sim.team_size),
             "max_rounds": int(sim.max_rounds),
             "tick_rate_hz": int(sim.tick_rate_hz),
+            # ``frame_skip`` × ``tick_rate_hz`` controls how many seconds of
+            # simulated game-time each env.step() advances; the API-side
+            # training_clock multiplies env_steps by this product to surface
+            # aggregated agent game-time. Capturing it in hparams makes the
+            # accounting reproducible from disk without parsing checkpoints.
+            "frame_skip": int(getattr(sim, "frame_skip", 1) or 1),
             "learning_rate": float(ml.learning_rate),
             "ppo_clip": float(ml.ppo_clip),
             "ppo_epochs": int(ml.ppo_epochs),

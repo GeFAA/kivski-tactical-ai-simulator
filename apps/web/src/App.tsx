@@ -38,6 +38,12 @@ const TrainingPill = () => {
   const totalTrainedSeconds = useStore(
     (s) => s.trainingStatus.totalTrainedSeconds,
   );
+  const totalSimulatedSeconds = useStore(
+    (s) => s.trainingStatus.totalSimulatedSeconds,
+  );
+  const currentSessionSimulatedSeconds = useStore(
+    (s) => s.trainingStatus.currentSessionSimulatedSeconds,
+  );
   const trainingGoal = useStore((s) => s.trainingGoal);
   const metricsHistory = useStore((s) => s.metricsHistory);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
@@ -66,10 +72,26 @@ const TrainingPill = () => {
     typeof totalTrainedSeconds === "number"
       ? formatDuration(totalTrainedSeconds)
       : null;
+  // "Agent game-time" — wall-clock × num_envs × frame_skip × tick_dt,
+  // aggregated across every recorded run. This is the number the user
+  // explicitly asked for: with N envs running in parallel each ticking
+  // their own simulated clock, an hour of wall-clock equals tens of
+  // thousands of agent hours of experience.
+  const totalSimLabel =
+    typeof totalSimulatedSeconds === "number" && totalSimulatedSeconds > 0
+      ? formatDuration(totalSimulatedSeconds)
+      : null;
+  const sessionSimLabel =
+    typeof currentSessionSimulatedSeconds === "number" &&
+    currentSessionSimulatedSeconds > 0
+      ? formatDuration(currentSessionSimulatedSeconds)
+      : null;
   const tooltip = [
     `Goal: ${spec.title}`,
     totalLabel ? `Total trained: ${totalLabel}` : null,
     sessionLabel ? `Current session: ${sessionLabel}` : null,
+    totalSimLabel ? `Agent-game-time: ${totalSimLabel}` : null,
+    sessionSimLabel ? `Session agent-time: ${sessionSimLabel}` : null,
     "Click to open the Training panel.",
   ]
     .filter(Boolean)
@@ -235,6 +257,12 @@ const App = () => {
         totalEpisodes: s.totalEpisodes,
         totalTrainedSeconds: s.totalTrainedSeconds,
         currentSessionSeconds: s.currentSessionSeconds,
+        totalSimulatedSeconds: s.totalSimulatedSeconds,
+        currentSessionSimulatedSeconds: s.currentSessionSimulatedSeconds,
+        totalEnvSteps: s.totalEnvSteps,
+        currentSessionNumEnvs: s.currentSessionNumEnvs,
+        currentSessionFrameSkip: s.currentSessionFrameSkip,
+        currentSessionTickDt: s.currentSessionTickDt,
       });
     };
     void tick();
