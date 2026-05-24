@@ -12,6 +12,7 @@ import {
   type TrainingConfigInfo,
   type TrainingGoal,
 } from "@/lib/api-client";
+import { formatDuration } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { SettingsTab, UiMode } from "@/lib/store";
 import MatchSetupModal from "@/components/MatchSetupModal";
@@ -512,6 +513,44 @@ const TrainingTab = () => {
               </>
             )}
           </p>
+        )}
+        {/* Persistent training-time tracker: current session (only when */}
+        {/* running) + cumulative total (always, when known). Survives    */}
+        {/* PC restarts via models/logs/training_clock.json.              */}
+        {(trainingStatus.running ||
+          typeof trainingStatus.totalTrainedSeconds === "number") && (
+          <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+            {trainingStatus.running && (
+              <div
+                className="rounded border border-kivski-border bg-kivski-bg/40 px-2 py-1.5"
+                title="Wall-clock since the current trainer process started."
+              >
+                <div className="text-[9px] uppercase tracking-widest text-kivski-muted">
+                  Current session
+                </div>
+                <div className="stat mt-0.5 text-[12px] text-kivski-text">
+                  {typeof trainingStatus.currentSessionSeconds === "number"
+                    ? formatDuration(trainingStatus.currentSessionSeconds)
+                    : "—"}
+                </div>
+              </div>
+            )}
+            {typeof trainingStatus.totalTrainedSeconds === "number" && (
+              <div
+                className={`rounded border border-kivski-border bg-kivski-bg/40 px-2 py-1.5 ${
+                  trainingStatus.running ? "" : "col-span-2"
+                }`}
+                title="Cumulative training time across every run on this machine. Persists across restarts."
+              >
+                <div className="text-[9px] uppercase tracking-widest text-kivski-muted">
+                  Total trained
+                </div>
+                <div className="stat mt-0.5 text-[12px] text-kivski-text">
+                  {formatDuration(trainingStatus.totalTrainedSeconds)}
+                </div>
+              </div>
+            )}
+          </div>
         )}
         {resumeTarget?.available && (
           <p

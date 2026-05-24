@@ -13,6 +13,7 @@ Construction order is intentional:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -21,6 +22,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from kivski_sim.config import KivskiConfig, load_config
+from kivski_sim.utils import now_unix
 
 from kivski_api import __version__
 from kivski_api.metrics_broadcaster import MetricsBroadcaster
@@ -32,12 +34,45 @@ from kivski_api.routes import system as system_routes
 from kivski_api.routes import training as training_routes
 from kivski_api.routes import ws as ws_routes
 from kivski_api.session import REGISTRY, TrainingWatchdog
+from kivski_api.training_clock import get_clock
 
 __all__ = ["create_app"]
 
 _LOG = logging.getLogger("kivski_api.app")
 
 _DEFAULT_CORS = "http://localhost:5173,http://127.0.0.1:5173"
+
+# How often the lifespan ticks the training clock. 15 s is short enough
+# that a crash or shutdown loses at most ~15 s of attributed wall-clock,
+# but long enough that the persistent JSON file isn't being rewritten
+# at HTTP-request cadence.
+_TRAINING_CLOCK_INTERVAL_SECONDS: float = 15.0
+
+
+def _any_training_running() -> bool:
+    """True iff any TrainingJob in the registry currently has a live process."""
+    return any(job.is_running() for job in REGISTRY.training.values())
+
+
+async def _training_clock_loop(stop_event: asyncio.Event) -> None:
+    """Periodically advance the persistent training clock.
+
+    Runs until ``stop_event`` is set. Catches and logs any per-tick
+    error so a transient filesystem hiccup can't kill the loop.
+    """
+    clock = get_clock()
+    while not stop_event.is_set():
+        try:
+            clock.tick(now_unix(), _any_training_running())
+        except Exception:  # pragma: no cover - defensive
+            _LOG.exception("training_clock tick raised")
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(),
+                timeout=_TRAINING_CLOCK_INTERVAL_SECONDS,
+            )
+        except TimeoutError:
+            continue
 
 
 def _parse_cors_origins() -> list[str]:
@@ -76,6 +111,15 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
         # silently leaving the system idle.
         watchdog = TrainingWatchdog(REGISTRY)
         await watchdog.start()
+        # Persistent training clock: every 15 s we record whether a
+        # trainer was running, attributing the elapsed wall-clock to
+        # the cumulative "total trained" counter. Loaded from disk on
+        # boot so the counter survives PC restarts.
+        clock_stop = asyncio.Event()
+        clock_task = asyncio.create_task(
+            _training_clock_loop(clock_stop),
+            name="training-clock-loop",
+        )
         try:
             yield
         finally:
@@ -83,6 +127,11 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
                 "Kivski API shutting down -- stopping broadcaster + watchdog + %d match(es)",
                 len(REGISTRY.sessions),
             )
+            clock_stop.set()
+            try:
+                await asyncio.wait_for(clock_task, timeout=2.0)
+            except (TimeoutError, asyncio.CancelledError):
+                clock_task.cancel()
             await watchdog.stop()
             await broadcaster.stop()
             await REGISTRY.shutdown()

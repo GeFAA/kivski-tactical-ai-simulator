@@ -402,6 +402,10 @@ interface RawTrainingStatus {
   job_id?: string | null;
   pid?: number | null;
   started_at?: number;
+  /** Cumulative training time across all runs (persistent across restarts). */
+  training_clock_total_seconds?: number;
+  /** Wall-clock since the running trainer started; 0 when idle. */
+  current_session_seconds?: number;
 }
 
 /**
@@ -446,10 +450,22 @@ export async function getTrainingStatus(): Promise<TrainingStatus | null> {
     if (!res.ok) return null;
     const raw = (await res.json()) as RawTrainingStatus | null;
     if (!raw || typeof raw !== "object") return null;
+    const totalTrainedSeconds =
+      typeof raw.training_clock_total_seconds === "number" &&
+      Number.isFinite(raw.training_clock_total_seconds)
+        ? raw.training_clock_total_seconds
+        : undefined;
+    const currentSessionSeconds =
+      typeof raw.current_session_seconds === "number" &&
+      Number.isFinite(raw.current_session_seconds)
+        ? raw.current_session_seconds
+        : undefined;
     return {
       running: Boolean(raw.running),
       episode: 0, // backend does not track in-flight episode for V1; comes via WS metrics_sample
       totalEpisodes: typeof raw.episodes === "number" ? raw.episodes : 0,
+      totalTrainedSeconds,
+      currentSessionSeconds,
     };
   } catch {
     return null;

@@ -14,6 +14,7 @@ import {
   getTrainingStatus,
   subscribeMatch,
 } from "@/lib/api-client";
+import { formatDuration } from "@/lib/format";
 import { useStore } from "@/lib/store";
 
 /**
@@ -31,6 +32,12 @@ const TrainingPill = () => {
   const uiMode = useStore((s) => s.uiMode);
   const running = useStore((s) => s.trainingStatus.running);
   const episode = useStore((s) => s.trainingStatus.episode);
+  const currentSessionSeconds = useStore(
+    (s) => s.trainingStatus.currentSessionSeconds,
+  );
+  const totalTrainedSeconds = useStore(
+    (s) => s.trainingStatus.totalTrainedSeconds,
+  );
   const trainingGoal = useStore((s) => s.trainingGoal);
   const metricsHistory = useStore((s) => s.metricsHistory);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
@@ -48,6 +55,25 @@ const TrainingPill = () => {
   if (uiMode !== "simple" || !running) return null;
 
   const spec = getTrainingGoalSpec(trainingGoal);
+  // Prefer the running-session time; fall back to the cumulative
+  // counter for the rare moment between trainer-start and the first
+  // clock tick when only the total is known.
+  const sessionLabel =
+    typeof currentSessionSeconds === "number" && currentSessionSeconds > 0
+      ? formatDuration(currentSessionSeconds)
+      : null;
+  const totalLabel =
+    typeof totalTrainedSeconds === "number"
+      ? formatDuration(totalTrainedSeconds)
+      : null;
+  const tooltip = [
+    `Goal: ${spec.title}`,
+    totalLabel ? `Total trained: ${totalLabel}` : null,
+    sessionLabel ? `Current session: ${sessionLabel}` : null,
+    "Click to open the Training panel.",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <button
@@ -57,16 +83,20 @@ const TrainingPill = () => {
         setSettingsOpen(true);
       }}
       className="fixed bottom-20 right-4 z-30 inline-flex items-center gap-2 rounded-full border border-kivski-defender/40 bg-kivski-panel/95 px-3 py-1.5 text-[11px] text-kivski-text shadow-lg backdrop-blur transition-colors hover:border-kivski-defender hover:bg-kivski-panel"
-      title={`Training is running. Goal: ${spec.title}. Click to see details.`}
-      aria-label={`Training running: ${spec.title}, episode ${episode}`}
+      title={tooltip}
+      aria-label={`Training running: ${spec.title}, episode ${episode}${
+        sessionLabel ? `, ${sessionLabel}` : ""
+      }`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-kivski-hp animate-pulse-slow" />
       <span className="font-medium text-kivski-defender">Training</span>
+      {sessionLabel && (
+        <>
+          <span className="stat text-kivski-text">{sessionLabel}</span>
+          <span className="text-kivski-muted">·</span>
+        </>
+      )}
       <span className="stat text-kivski-muted">ep {episode}</span>
-      <span className="text-kivski-muted">·</span>
-      <span className="truncate text-kivski-text" style={{ maxWidth: "10rem" }}>
-        {spec.title}
-      </span>
       {typeof latestWr === "number" && (
         <>
           <span className="text-kivski-muted">·</span>
@@ -203,6 +233,8 @@ const App = () => {
         running: s.running,
         episode: s.episode,
         totalEpisodes: s.totalEpisodes,
+        totalTrainedSeconds: s.totalTrainedSeconds,
+        currentSessionSeconds: s.currentSessionSeconds,
       });
     };
     void tick();

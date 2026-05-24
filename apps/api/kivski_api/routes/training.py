@@ -25,6 +25,7 @@ from kivski_sim.utils import now_unix
 from pydantic import BaseModel, Field
 
 from kivski_api.session import REGISTRY, TrainingJob
+from kivski_api.training_clock import get_clock
 
 # Valid checkpoint extensions we'll auto-resume from. ``.pt`` is the
 # convention used by the MAPPO trainer; ``.ckpt`` is kept for forward
@@ -294,6 +295,20 @@ async def stop_training() -> dict[str, Any]:
     return {"stopped": True, "exit_code": job.exit_code}
 
 
+def _clock_snapshot(now: float, running_job: TrainingJob | None) -> dict[str, float]:
+    """Return ``{total_seconds, current_session_seconds}`` for the response.
+
+    Ticks the persistent clock first so a polling client sees an
+    up-to-date total even between background lifespan ticks. The
+    in-process clock is thread-safe so multiple concurrent /status
+    requests can't double-count.
+    """
+    clock = get_clock()
+    clock.tick(now, running_job is not None)
+    session_started = running_job.started_at if running_job is not None else None
+    return clock.to_dict(session_started_at=session_started, now_unix=now)
+
+
 @router.get("/status")
 async def training_status() -> dict[str, Any]:
     """Latest job snapshot + tail of its log + last crash reason.
@@ -303,6 +318,11 @@ async def training_status() -> dict[str, Any]:
     ``incompatible_checkpoint``). The frontend renders a red warning
     banner whenever this is non-null so the user knows why auto-restart
     was suppressed.
+
+    Also returns ``training_clock_total_seconds`` (cumulative across all
+    runs on this machine) and ``current_session_seconds`` (since the
+    running trainer started). Frontend's polling /status loop uses these
+    to render the "Training 2h 15m" pill + the drawer counters.
     """
     job = REGISTRY.latest_training()
     crash_reason: dict[str, Any] | None = None
@@ -312,6 +332,11 @@ async def training_status() -> dict[str, Any]:
         crash_reason = job.last_crash_reason
     elif REGISTRY.watchdog is not None:
         crash_reason = REGISTRY.watchdog.last_crash_reason
+
+    now = now_unix()
+    running_job = job if (job is not None and job.is_running()) else None
+    clock = _clock_snapshot(now, running_job)
+
     if job is None:
         return {
             "running": False,
@@ -320,6 +345,8 @@ async def training_status() -> dict[str, Any]:
             "started_at": 0.0,
             "log_tail": [],
             "last_crash_reason": crash_reason,
+            "training_clock_total_seconds": clock["total_seconds"],
+            "current_session_seconds": clock["current_session_seconds"],
         }
     return {
         "running": job.is_running(),
@@ -333,6 +360,31 @@ async def training_status() -> dict[str, Any]:
         "log_tail": job.tail_log(50),
         "log_path": str(job.log_path),
         "last_crash_reason": crash_reason,
+        "training_clock_total_seconds": clock["total_seconds"],
+        "current_session_seconds": clock["current_session_seconds"],
+    }
+
+
+@router.get("/clock")
+async def training_clock() -> dict[str, Any]:
+    """Return the persistent training-time clock.
+
+    ``total_seconds`` survives backend restarts (persisted to
+    ``models/logs/training_clock.json``). ``current_session_seconds`` is
+    derived from the running trainer's ``started_at`` and is 0 when
+    no trainer is currently live.
+    """
+    job = REGISTRY.latest_training()
+    running_job = job if (job is not None and job.is_running()) else None
+    now = now_unix()
+    snap = _clock_snapshot(now, running_job)
+    return {
+        "total_seconds": snap["total_seconds"],
+        "current_session_seconds": snap["current_session_seconds"],
+        "running": running_job is not None,
+        "session_started_at": (
+            float(running_job.started_at) if running_job is not None else 0.0
+        ),
     }
 
 

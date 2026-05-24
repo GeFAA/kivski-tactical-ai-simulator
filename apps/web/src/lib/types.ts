@@ -274,6 +274,17 @@ export interface TrainingStatus {
   policyLoss?: number;
   valueLoss?: number;
   entropy?: number;
+  /**
+   * Cumulative wall-clock seconds the trainer has been running across
+   * every run on this machine. Persisted to disk by the backend so the
+   * counter survives PC restarts. ``undefined`` on older backends.
+   */
+  totalTrainedSeconds?: number;
+  /**
+   * Wall-clock seconds since the currently running trainer process
+   * started (0 / undefined when idle).
+   */
+  currentSessionSeconds?: number;
 }
 
 export interface MetricsSample {
