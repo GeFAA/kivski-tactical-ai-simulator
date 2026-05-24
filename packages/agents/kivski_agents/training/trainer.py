@@ -524,20 +524,25 @@ class Trainer:
 
     @staticmethod
     def _compute_combined_score(eval_results: dict[str, EvalResult]) -> float:
-        """Mean winrate across all evaluated baselines (default scoring).
+        """Weighted winrate across evaluated baselines.
 
-        Treating every baseline equally is a deliberately simple V1 choice
-        so we don't have to hand-tune weights. Returns ``-inf`` when there
-        are no usable results so ``_maybe_promote_best`` correctly skips
-        promotion.
+        Random baseline gets weight 0.2, scripted baselines weight 1.0 each.
+        Reason: WR vs random can sit at 0 for very long in MARL (random is
+        unpredictable enough to look like a "weird strategy"), which would
+        otherwise stall ``best.pt`` promotion for hours even when WR vs
+        scripted is climbing steadily. Returns ``-inf`` when there are no
+        usable results so ``_maybe_promote_best`` correctly skips promotion.
         """
-        winrates: list[float] = []
-        for res in eval_results.values():
+        weighted_sum: float = 0.0
+        weight_total: float = 0.0
+        for name, res in eval_results.items():
             with contextlib.suppress(AttributeError, TypeError, ValueError):
-                winrates.append(float(res.yellow_winrate))
-        if not winrates:
+                w = 0.2 if "random" in name.lower() else 1.0
+                weighted_sum += w * float(res.yellow_winrate)
+                weight_total += w
+        if weight_total <= 0.0:
             return float("-inf")
-        return float(sum(winrates) / len(winrates))
+        return float(weighted_sum / weight_total)
 
     def _maybe_promote_best(self, eval_results: dict[str, EvalResult]) -> None:
         """Copy the latest checkpoint to ``best.pt`` when its score improves.
