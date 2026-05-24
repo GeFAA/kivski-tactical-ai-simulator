@@ -628,14 +628,22 @@ class Engine:
         # already bound the output, but Gaussian sampling can overshoot).
         mv = np.clip(mv, -1.0, 1.0)
         mag = float(np.linalg.norm(mv))
-        if mag <= 1e-6:
-            # Effectively HOLD: rotate to face the aim target if any.
+        if mag <= 0.08:
+            # Tiny magnitude -> HOLD. The 0.08 deadband prevents an
+            # untrained Gaussian policy (mean=0, std=1) from producing
+            # near-zero magnitudes that translate to crawling speed and
+            # episodes that never end. Threshold is small enough that a
+            # trained policy can still issue near-zero moves on purpose.
             self._maybe_face_aim(agent, action)
             return
-        # Clamp to the unit circle so diagonals aren't sqrt(2) faster.
-        if mag > 1.0:
-            mv = mv / mag
-            mag = 1.0
+        # *** v0.4.1: normalise to UNIT magnitude. Continuous policy chooses
+        # the *direction* (any angle), but speed is always full (modulated
+        # by MicroAction below). Without this, the untrained Gaussian
+        # produces magnitudes ~0.3-0.6 → agents creep → matches timeout
+        # → 0 episodes complete → no PPO updates. Trained policy can still
+        # express "move slowly" via MicroAction.CROUCH_HOLD.
+        mv = mv / mag
+        mag = 1.0
 
         speed = _BASE_SPEED_TILES_PER_TICK_AT_10HZ * _SPEED_MULT.get(action.micro, 1.0)
         # Scale tick-rate -- our base is 10 Hz.
