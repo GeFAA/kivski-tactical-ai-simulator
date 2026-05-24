@@ -1,0 +1,143 @@
+# Kivski Tactical AI Simulator -- "turbo" preset.
+#
+# Max-throughput 5v5 training: shorter matches (max_rounds=12), higher
+# frame_skip (6), more parallel envs (48), 2x reward shaping magnitudes
+# and slightly more aggressive exploration + learning rate.
+#
+# Trains directly in 5v5 (same distribution as the viewer match) so the
+# rendered game stays representative of the policy distribution.
+#
+# Pick via the New-Match training-config dropdown ("turbo") or:
+#   kivski-train --config configs/turbo.yaml
+
+seed: 20260524
+
+simulation:
+  map: dustline
+  team_size: 5
+  max_rounds: 12
+  side_switch_round: 6
+  round_time_seconds: 90
+  bomb_timer_seconds: 40
+  plant_time_seconds: 3.0
+  defuse_time_seconds: 5.0
+  defuse_time_with_kit_seconds: 3.0
+  buy_time_seconds: 15
+  tick_rate_hz: 10
+  max_ticks_per_round: 900
+  starting_money: 800
+  # Turbo: policy acts every 6 ticks instead of 4 -> 50% fewer policy
+  # evals per game tick, ~1.5x faster wallclock for the same episodes.
+  frame_skip: 6
+
+economy:
+  reward_round_win: 3250
+  reward_round_loss_base: 1900
+  reward_round_loss_increment: 500
+  reward_round_loss_max: 3400
+  reward_kill_rifle: 300
+  reward_kill_pistol: 300
+  reward_kill_smg: 600
+  reward_kill_sniper: 100
+  reward_bomb_plant: 300
+  reward_bomb_defuse: 250
+  reward_bomb_detonate: 150
+
+combat:
+  base_accuracy_standing: 0.78
+  base_accuracy_moving: 0.32
+  base_accuracy_crouched: 0.92
+  reaction_time_min_ticks: 1
+  reaction_time_max_ticks: 5
+  los_check_step: 0.5
+  cover_damage_multiplier: 0.55
+
+agent:
+  observation:
+    teammate_slots: 4
+    last_known_enemies: 5
+    sound_event_slots: 6
+    received_message_slots: 5
+    history_length: 4
+  action:
+    move_intents: 9
+    micro_actions: 6
+    comm_actions: 9
+    buy_options: 8
+
+ml:
+  algo: mappo
+  hidden_size: 256
+  gru_layers: 1
+  comm_attention_heads: 4
+  comm_embedding_dim: 64
+  gumbel_temperature: 1.0
+  ppo_clip: 0.2
+  ppo_epochs: 4
+  minibatch_size: 2048
+  learning_rate: 6.0e-4
+  entropy_coef: 0.030
+  value_coef: 0.5
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+
+training:
+  num_envs: 48
+  rollout_steps: 256
+  total_episodes: 50000
+  checkpoint_every_episodes: 250
+  eval_every_episodes: 50
+  # *** Curriculum DISABLED: train directly in 5v5 so the viewer match
+  # (always 5v5) sees the same distribution.
+  curriculum:
+    enabled: false
+    stages: []
+
+league:
+  population_size: 4
+  snapshot_every_episodes: 500
+  exploit_fraction: 0.25
+  random_fraction: 0.10
+  scripted_fraction: 0.10
+
+# Turbo reward shaping: 2x magnitude across the board, faster decay
+# (12k vs 15k episodes) since shorter matches give denser sparse rewards.
+reward_shaping:
+  enabled: true
+  decay_after_episodes: 12000
+  damage_dealt_per_hp: 0.016
+  damage_received_per_hp: -0.008
+  survival_per_second: 0.002
+  successful_plant: 1.2
+  successful_defuse: 1.0
+  bomb_pickup: 0.10
+  useful_trade: 0.40
+  pointless_death: -0.50
+  map_control_per_tile: 0.0020
+
+# Reward-curriculum DISABLED here too -- all reward buckets active from
+# step 0 so 5v5 agents learn the full reward landscape immediately.
+reward_curriculum:
+  enabled: false
+  stages: []
+
+telemetry:
+  backend: csv
+  log_every_episodes: 5
+  flush_every_seconds: 1
+
+evaluation:
+  baselines: [random, scripted_rush, scripted_hold, frozen_latest]
+  scenarios:
+    - { name: full_pistol,       team_size: 5, money_override: 800 }
+    - { name: full_buy,          team_size: 5, money_override: 5000 }
+    - { name: retake_2v3,        attackers: 3, defenders: 2, scenario: "post_plant" }
+    - { name: save_round,        team_size: 5, money_override: 0 }
+  matches_per_scenario: 10
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+  tick_broadcast_hz: 20
+  max_clients: 4

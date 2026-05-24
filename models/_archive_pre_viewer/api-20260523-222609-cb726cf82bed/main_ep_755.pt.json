@@ -1,0 +1,22 @@
+{
+  "env_shape": {
+    "n_heads": 5,
+    "obs_dim": 160,
+    "team_size": 1
+  },
+  "env_steps": 794624,
+  "episode": 755,
+  "kivski_version": "0.4.0",
+  "model_arch": {
+    "comm_value_dim": 32,
+    "gru_layers": 1,
+    "hidden_size": 256
+  },
+  "opponent": "main",
+  "run_name": "api-20260523-222609-cb726cf82bed",
+  "schema_version": 1,
+  "stage": "1v1_killshoot",
+  "timestamp": 1779575282.727218,
+  "update_step": 97,
+  "update_steps": 97
+}
