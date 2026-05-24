@@ -82,3 +82,6 @@ runs/
 .kivski-pids.json
 *.log
 *.err
+
+# Archived checkpoints (multi-GB, never push)
+models/_archive_*/
