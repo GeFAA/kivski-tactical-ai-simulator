@@ -293,7 +293,8 @@ const GoalCard = ({
   <button
     type="button"
     onClick={onClick}
-    aria-pressed={active}
+    role="radio"
+    aria-checked={active}
     aria-label={`Pick training goal: ${spec.title}`}
     className={`flex w-full items-start gap-3 rounded border px-3 py-2.5 text-left transition-colors ${
       overridden
@@ -527,7 +528,11 @@ const TrainingTab = () => {
 
       <section>
         <SectionLabel>Training goal</SectionLabel>
-        <div className="flex flex-col gap-1.5">
+        <div
+          className="flex flex-col gap-1.5"
+          role="radiogroup"
+          aria-label="Training goal"
+        >
           {TRAINING_GOALS.map((spec) => (
             <GoalCard
               key={spec.id}
