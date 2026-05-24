@@ -45,9 +45,7 @@ def _make_config() -> KivskiConfig:
     )
 
 
-def _random_action_dict(
-    env: KivskiParallelEnv, rng: np.random.Generator
-) -> dict[str, dict[str, np.ndarray]]:
+def _random_action_dict(env: KivskiParallelEnv, rng: np.random.Generator) -> dict[str, dict[str, np.ndarray]]:
     """Build a v0.4 mixed-action dict per agent."""
     space = env.action_space("agent_0")
     nvec = np.asarray(space.spaces["discrete"].nvec, dtype=np.int64)

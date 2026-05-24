@@ -157,9 +157,7 @@ def test_scripted_rush_targets_bombsite(env: KivskiParallelEnv) -> None:
 
     # Once in LIVE, at least one agent should be picking a non-HOLD move
     # (i.e. heading toward a bombsite). HOLD = zero move_vec.
-    any_movement = any(
-        float(np.linalg.norm(np.asarray(act["move"]))) > 1e-3 for act in actions.values()
-    )
+    any_movement = any(float(np.linalg.norm(np.asarray(act["move"]))) > 1e-3 for act in actions.values())
     assert any_movement, "Rush baseline should be moving during LIVE phase"
 
 

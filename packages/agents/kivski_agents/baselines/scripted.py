@@ -251,16 +251,12 @@ class ScriptedHoldBaseline:
 
     def _act_one(self, decoded: dict[str, Any]) -> dict[str, np.ndarray]:
         if not _is_alive(decoded):
-            return _pack_action(
-                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
-            )
+            return _pack_action(_hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.HEAVY_PISTOL)
-            return _pack_action(
-                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0
-            )
+            return _pack_action(_hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0)
 
         # ----- LIVE phase ------------------------------------------------
         site_name, dx, dy, dist = _nearest_bombsite(decoded)
@@ -275,9 +271,7 @@ class ScriptedHoldBaseline:
         if dist < self._hold_threshold:
             # On-site: crouch and hold the angle. If we see an enemy, fire.
             comm = CommAction.PING_LOCATION if enemy_slot is not None else CommAction.NONE
-            return _pack_action(
-                _hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
-            )
+            return _pack_action(_hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
 
         # Approach the chosen bombsite -- continuous move toward (dx, dy).
         move = _continuous_move(dx, dy, speed=1.0)
@@ -368,16 +362,12 @@ class ScriptedRushBaseline:
 
     def _act_one(self, decoded: dict[str, Any], target_site: str) -> dict[str, np.ndarray]:
         if not _is_alive(decoded):
-            return _pack_action(
-                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
-            )
+            return _pack_action(_hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.SMG)
-            return _pack_action(
-                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0
-            )
+            return _pack_action(_hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0)
 
         # ----- LIVE phase ------------------------------------------------
         dx, dy, dist = _bombsite_distance(decoded, target_site)
@@ -396,9 +386,7 @@ class ScriptedRushBaseline:
         # On site but no bomb: hold and shoot.
         if on_site:
             comm = CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.NONE
-            return _pack_action(
-                _hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
-            )
+            return _pack_action(_hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
 
         # Rush toward the chosen site -- continuous direction at full speed.
         move = _continuous_move(dx, dy, speed=1.0)

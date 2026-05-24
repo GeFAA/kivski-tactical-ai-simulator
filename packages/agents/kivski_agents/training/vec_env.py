@@ -148,9 +148,7 @@ class VecEnvWrapper:
         nvec = _extract_discrete_nvec(self.envs[0].action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
-        self.continuous_move_dim: int = _extract_move_dim(
-            self.envs[0].action_space(self.agent_names[0])
-        )
+        self.continuous_move_dim: int = _extract_move_dim(self.envs[0].action_space(self.agent_names[0]))
         # Per-env accumulators for episode_stats.
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator(episode=0) for _ in range(self.num_envs)]
         # Initial observation buffer for the very first reset.

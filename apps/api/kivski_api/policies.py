@@ -297,9 +297,7 @@ class ScriptedPolicy(PolicyAdapter):
             if self._sprint_bias:
                 # Rush: pick a random heading, sprint forward most ticks.
                 angle = float(self._rng.uniform(0.0, 2.0 * np.pi))
-                move_vec = np.array(
-                    [np.cos(angle), np.sin(angle)], dtype=np.float32
-                )
+                move_vec = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
                 micro = MicroAction.INTERACT if float(self._rng.random()) < 0.08 else MicroAction.SPRINT
                 comm = CommAction.SUGGEST_ATTACK if self._rng.random() < 0.02 else CommAction.NONE
                 buy = BuyChoice.SMG if self._rng.random() < 0.02 else BuyChoice.NONE

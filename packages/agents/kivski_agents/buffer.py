@@ -225,20 +225,12 @@ class RolloutBuffer:
         if isinstance(actions, dict):
             move = actions["move"].to(torch.float32)
             disc = actions["discrete"].to(torch.int64)
-            self.actions_move[step] = _check(
-                move, "actions['move']", (ne, na, self.continuous_move_dim)
-            )
-            self.actions_discrete[step] = _check(
-                disc, "actions['discrete']", (ne, na, self.n_heads)
-            )
+            self.actions_move[step] = _check(move, "actions['move']", (ne, na, self.continuous_move_dim))
+            self.actions_discrete[step] = _check(disc, "actions['discrete']", (ne, na, self.n_heads))
         else:
-            self.actions_discrete[step] = _check(
-                actions.to(torch.int64), "actions", (ne, na, self.n_heads)
-            )
+            self.actions_discrete[step] = _check(actions.to(torch.int64), "actions", (ne, na, self.n_heads))
             # Move defaults to zeros (HOLD) when only discrete actions are stored.
-            self.actions_move[step] = torch.zeros(
-                ne, na, self.continuous_move_dim, device=self.device
-            )
+            self.actions_move[step] = torch.zeros(ne, na, self.continuous_move_dim, device=self.device)
         self.log_probs[step] = _check(log_probs.to(torch.float32), "log_probs", (ne, na))
         # Value may arrive as [N_envs] or [N_envs, 1]; squeeze.
         v = value.to(self.device, torch.float32).view(ne)

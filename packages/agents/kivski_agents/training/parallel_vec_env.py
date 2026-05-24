@@ -141,9 +141,7 @@ class ThreadedVecEnv:
         nvec = _extract_discrete_nvec(self.envs[0].action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
-        self.continuous_move_dim: int = _extract_move_dim(
-            self.envs[0].action_space(self.agent_names[0])
-        )
+        self.continuous_move_dim: int = _extract_move_dim(self.envs[0].action_space(self.agent_names[0]))
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator() for _ in range(self.num_envs)]
         self._current_obs: dict[str, np.ndarray] | None = None
         self._current_infos: list[dict[str, Any]] | None = None
@@ -632,9 +630,7 @@ class SubprocVecEnv:
         nvec = _extract_discrete_nvec(self._anchor_env.action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
-        self.continuous_move_dim: int = _extract_move_dim(
-            self._anchor_env.action_space(self.agent_names[0])
-        )
+        self.continuous_move_dim: int = _extract_move_dim(self._anchor_env.action_space(self.agent_names[0]))
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator() for _ in range(self.num_envs)]
 
         self._current_obs: dict[str, np.ndarray] | None = None

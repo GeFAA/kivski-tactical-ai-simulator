@@ -59,8 +59,7 @@ class RandomBaseline:
             dims_attr = getattr(env_action_space, "nvec", None)
             if dims_attr is None:
                 raise TypeError(
-                    "RandomBaseline expects spaces.Dict or MultiDiscrete, "
-                    f"got {type(env_action_space)!r}"
+                    f"RandomBaseline expects spaces.Dict or MultiDiscrete, got {type(env_action_space)!r}"
                 )
             self._dims = np.asarray(dims_attr, dtype=np.int64)
         # Default move bounds when only a discrete space was provided.
@@ -114,9 +113,7 @@ class RandomBaseline:
             if self._rng.random() < 0.15:
                 move = np.zeros(self._move_low.shape, dtype=np.float32)
             else:
-                move = self._rng.uniform(
-                    low=self._move_low, high=self._move_high
-                ).astype(np.float32)
+                move = self._rng.uniform(low=self._move_low, high=self._move_high).astype(np.float32)
             # Discrete: bias comm/buy toward NONE so the random bot doesn't
             # saturate the message channel or burn money every tick.
             disc = np.empty(self._dims.shape[0], dtype=np.int64)

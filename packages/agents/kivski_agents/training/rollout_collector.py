@@ -441,12 +441,8 @@ class RolloutCollector:
             )
             value = self.runner.model.value_head(joint_obs).view(ne).detach()
 
-        move_actions = (
-            out["move_actions"].view(ne, ts, move_dim).cpu().numpy().astype(np.float32)
-        )
-        disc_actions = (
-            out["discrete_actions"].view(ne, ts, self.n_heads).cpu().numpy().astype(np.int64)
-        )
+        move_actions = out["move_actions"].view(ne, ts, move_dim).cpu().numpy().astype(np.float32)
+        disc_actions = out["discrete_actions"].view(ne, ts, self.n_heads).cpu().numpy().astype(np.int64)
         log_probs = out["log_probs"].view(ne, ts).cpu().numpy().astype(np.float32)
         entropy = out["entropy"].view(ne, ts).cpu().numpy().astype(np.float32)
         payloads = out["comm_payload"].view(ne, ts, cv_dim).cpu().numpy().astype(np.float32)
