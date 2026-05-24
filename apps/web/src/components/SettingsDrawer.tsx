@@ -3,10 +3,14 @@ import {
   getCheckpoints,
   getResumeTarget,
   getTrainingConfigs,
+  getTrainingGoalSpec,
+  inferGoalFromConfigPath,
   postCommand,
+  TRAINING_GOALS,
   type CheckpointInfo,
   type ResumeTargetInfo,
   type TrainingConfigInfo,
+  type TrainingGoal,
 } from "@/lib/api-client";
 import { useStore } from "@/lib/store";
 import type { SettingsTab, UiMode } from "@/lib/store";
@@ -264,10 +268,128 @@ const MatchTab = ({ onClose }: { onClose: () => void }) => {
 
 // ---------- Training tab ----------
 
+/**
+ * Big-button picker for one of the three training goals. Replaces the
+ * raw "Config" dropdown with intent-based wording so non-technical users
+ * don't have to map ``fast.yaml`` / ``turbo.yaml`` to their actual
+ * behaviour. The selected button gets a defender-coloured ring, and the
+ * card title carries an `aria-pressed` toggle for screen readers.
+ *
+ * When ``advancedOverride`` is true the goal cards are rendered greyed
+ * out and non-interactive — the user has overridden the goal with a
+ * raw config file in the Advanced reveal below.
+ */
+const GoalCard = ({
+  spec,
+  active,
+  overridden,
+  onClick,
+}: {
+  spec: (typeof TRAINING_GOALS)[number];
+  active: boolean;
+  overridden: boolean;
+  onClick: () => void;
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-pressed={active}
+    aria-label={`Pick training goal: ${spec.title}`}
+    className={`flex w-full items-start gap-3 rounded border px-3 py-2.5 text-left transition-colors ${
+      overridden
+        ? "border-kivski-border bg-kivski-panel-2/50 text-kivski-muted opacity-60"
+        : active
+          ? "border-kivski-defender bg-kivski-defender/10 ring-1 ring-kivski-defender/40"
+          : "border-kivski-border bg-kivski-panel-2 hover:border-kivski-defender/60"
+    }`}
+  >
+    <span aria-hidden className="mt-0.5 text-xl leading-none">
+      {spec.icon}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span className="flex items-baseline justify-between gap-2">
+        <span className="text-[12px] font-semibold text-kivski-text">
+          {spec.title}
+        </span>
+        {active && !overridden && (
+          <span className="rounded bg-kivski-defender/20 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-kivski-defender">
+            picked
+          </span>
+        )}
+      </span>
+      <span className="mt-0.5 block text-[10px] leading-tight text-kivski-muted">
+        {spec.blurb}
+      </span>
+    </span>
+  </button>
+);
+
+/**
+ * Single-line card representing a checkpoint in the load-checkpoint
+ * picker. Clicking it sets it as the load target; the active card
+ * carries a coloured border so it's obviously selected.
+ *
+ * The label / icon / age are pre-computed in ``api-client.getCheckpoints``
+ * so this component is purely presentational — keeps the translation
+ * layer in one place.
+ */
+const CheckpointCard = ({
+  ckpt,
+  active,
+  onClick,
+}: {
+  ckpt: CheckpointInfo;
+  active: boolean;
+  onClick: () => void;
+}) => {
+  const isBest = ckpt.kind === "best";
+  const isSnapshot = (ckpt.name ?? "").toLowerCase().startsWith("snapshot");
+  const icon = isBest ? "★" : isSnapshot ? "📸" : "💾";
+  const epsLine = ckpt.step ? `ep ${ckpt.step}` : null;
+  const ageLine = ckpt.ageLabel ?? "";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`Select checkpoint ${ckpt.prettyLabel ?? ckpt.name}`}
+      title={ckpt.name}
+      className={`flex w-full items-center gap-2.5 rounded border px-2.5 py-2 text-left transition-colors ${
+        active
+          ? "border-kivski-defender bg-kivski-defender/10 ring-1 ring-kivski-defender/40"
+          : "border-kivski-border bg-kivski-panel-2 hover:border-kivski-defender/60"
+      }`}
+    >
+      <span aria-hidden className={`text-base leading-none ${isBest ? "text-yellow-400" : ""}`}>
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[12px] font-medium text-kivski-text">
+          {ckpt.prettyLabel ?? ckpt.name}
+        </span>
+        <span className="mt-0.5 flex items-center gap-2 text-[10px] text-kivski-muted">
+          {epsLine && <span className="stat">{epsLine}</span>}
+          {ageLine && <span className="truncate">{ageLine}</span>}
+        </span>
+      </span>
+      {active && (
+        <span className="rounded bg-kivski-defender/20 px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-kivski-defender">
+          load
+        </span>
+      )}
+    </button>
+  );
+};
+
 const TrainingTab = () => {
   const trainingStatus = useStore((s) => s.trainingStatus);
+  const trainingGoal = useStore((s) => s.trainingGoal);
+  const setTrainingGoal = useStore((s) => s.setTrainingGoal);
+  const metricsHistory = useStore((s) => s.metricsHistory);
+
   const [configs, setConfigs] = useState<TrainingConfigInfo[]>([]);
-  const [selectedConfig, setSelectedConfig] = useState<string>("");
+  const [rawConfigOverride, setRawConfigOverride] = useState<string>("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [checkpoints, setCheckpoints] = useState<CheckpointInfo[]>([]);
   const [selectedCkpt, setSelectedCkpt] = useState<string>("");
   const [episodeCount, setEpisodeCount] = useState(10);
@@ -295,7 +417,6 @@ const TrainingTab = () => {
       const safeCfgs = Array.isArray(cfgs) ? cfgs : [];
       const safeCkpts = Array.isArray(ckpts) ? ckpts : [];
       setConfigs(safeCfgs);
-      if (safeCfgs[0]) setSelectedConfig(safeCfgs[0].id);
       setCheckpoints(safeCkpts);
       if (safeCkpts[0]) setSelectedCkpt(safeCkpts[0].id);
       setResumeTarget(resume);
@@ -321,6 +442,34 @@ const TrainingTab = () => {
     }
   };
 
+  // Effective config that will be POSTed: explicit raw override beats
+  // the goal-mapped path. The override is cleared when the user
+  // re-picks a goal so the cards don't stay greyed out forever.
+  const effectiveConfigId = useMemo(() => {
+    if (rawConfigOverride) return rawConfigOverride;
+    return getTrainingGoalSpec(trainingGoal).configPath;
+  }, [rawConfigOverride, trainingGoal]);
+
+  const inferredFromOverride = useMemo(
+    () => inferGoalFromConfigPath(rawConfigOverride || null),
+    [rawConfigOverride],
+  );
+
+  const goalIsOverridden = rawConfigOverride !== "" && inferredFromOverride === null;
+
+  // Latest win-rate vs random — surfaced in the status header so a user
+  // who picked "Watch progress fast" can actually see the trained
+  // policy beating the baseline within the first 1-3 hours.
+  const latestWinrate = useMemo(() => {
+    for (let i = metricsHistory.length - 1; i >= 0; i--) {
+      const v = metricsHistory[i].winrateVsRandom;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return undefined;
+  }, [metricsHistory]);
+
+  const activeGoalSpec = getTrainingGoalSpec(trainingGoal);
+
   const statusLabel = useMemo(() => {
     if (!trainingStatus.running) return "Idle";
     return `Running · ep ${trainingStatus.episode}${
@@ -329,6 +478,12 @@ const TrainingTab = () => {
         : ""
     }`;
   }, [trainingStatus]);
+
+  const pickGoal = (id: TrainingGoal) => {
+    setTrainingGoal(id);
+    // Clearing the raw override re-enables the cards visually.
+    setRawConfigOverride("");
+  };
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -344,6 +499,19 @@ const TrainingTab = () => {
           />
           <span className="text-kivski-text">{statusLabel}</span>
         </div>
+        {trainingStatus.running && (
+          <p className="mt-1 text-[10px] leading-tight text-kivski-muted">
+            Goal:{" "}
+            <span className="text-kivski-text">{activeGoalSpec.title}</span>
+            {typeof latestWinrate === "number" && (
+              <>
+                {" · "}
+                WR vs Random:{" "}
+                <span className="text-kivski-text">{latestWinrate.toFixed(2)}</span>
+              </>
+            )}
+          </p>
+        )}
         {resumeTarget?.available && (
           <p
             className="mt-1 text-[10px] leading-tight text-kivski-muted"
@@ -358,20 +526,53 @@ const TrainingTab = () => {
       </section>
 
       <section>
-        <SectionLabel>Config</SectionLabel>
-        <select
-          value={selectedConfig}
-          onChange={(e) => setSelectedConfig(e.target.value)}
-          disabled={configs.length === 0}
-          className="stat w-full rounded border border-kivski-border bg-kivski-bg px-2 py-2 text-xs text-kivski-text outline-none focus:border-kivski-defender"
-        >
-          {configs.length === 0 && <option value="">(default)</option>}
-          {configs.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
+        <SectionLabel>Training goal</SectionLabel>
+        <div className="flex flex-col gap-1.5">
+          {TRAINING_GOALS.map((spec) => (
+            <GoalCard
+              key={spec.id}
+              spec={spec}
+              active={trainingGoal === spec.id}
+              overridden={goalIsOverridden}
+              onClick={() => pickGoal(spec.id)}
+            />
           ))}
-        </select>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="mt-2 text-[10px] text-kivski-muted hover:text-kivski-defender"
+          aria-expanded={showAdvanced}
+        >
+          {showAdvanced ? "Hide advanced" : "Advanced: pick raw config"}
+        </button>
+        {showAdvanced && (
+          <div className="mt-2 rounded border border-kivski-border bg-kivski-bg/40 p-2">
+            <p className="mb-1.5 text-[10px] leading-tight text-kivski-muted">
+              Override goal mapping by selecting any YAML preset directly.
+              Picking one greys out the goal cards.
+            </p>
+            <select
+              value={rawConfigOverride}
+              onChange={(e) => setRawConfigOverride(e.target.value)}
+              disabled={configs.length === 0}
+              className="stat w-full rounded border border-kivski-border bg-kivski-bg px-2 py-1.5 text-xs text-kivski-text outline-none focus:border-kivski-defender"
+              aria-label="Raw training config override"
+            >
+              <option value="">(use goal above)</option>
+              {configs.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} — {c.id}
+                </option>
+              ))}
+            </select>
+            {goalIsOverridden && (
+              <p className="mt-1 text-[10px] leading-tight text-kivski-defender">
+                Goal override active — using raw config {rawConfigOverride}.
+              </p>
+            )}
+          </div>
+        )}
       </section>
 
       <section>
@@ -383,14 +584,14 @@ const TrainingTab = () => {
             onClick={() =>
               send("start training", {
                 type: "start_training",
-                configId: selectedConfig || undefined,
+                configId: effectiveConfigId || undefined,
               })
             }
             disabled={busy !== null || trainingStatus.running}
             title={
               resumeTarget?.available
                 ? `Resumes from ${resumeTarget.name ?? resumeTarget.path}`
-                : "Starts a fresh training run"
+                : `Starts a fresh training run (${effectiveConfigId})`
             }
           >
             Start
@@ -425,6 +626,7 @@ const TrainingTab = () => {
               )
             }
             className="stat w-20 rounded border border-kivski-border bg-kivski-bg px-2 py-2 text-xs text-kivski-text outline-none focus:border-kivski-defender"
+            aria-label="Episode count"
           />
           <button
             type="button"
@@ -433,7 +635,7 @@ const TrainingTab = () => {
               send(`run ${episodeCount} eps`, {
                 type: "run_episodes",
                 n: episodeCount,
-                configId: selectedConfig || undefined,
+                configId: effectiveConfigId || undefined,
               })
             }
             disabled={busy !== null}
@@ -444,33 +646,23 @@ const TrainingTab = () => {
       </section>
 
       <section>
-        <SectionLabel>Checkpoints</SectionLabel>
+        <SectionLabel>Load checkpoint</SectionLabel>
         <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            className="btn"
-            onClick={() =>
-              send("save checkpoint (auto)", { type: "save_checkpoint" })
-            }
-            disabled={busy !== null}
-            title="Trainer auto-saves periodically (see configs/default.yaml checkpoint_interval)"
-          >
-            Save Checkpoint
-          </button>
-          <select
-            value={selectedCkpt}
-            onChange={(e) => setSelectedCkpt(e.target.value)}
-            className="stat w-full rounded border border-kivski-border bg-kivski-bg px-2 py-2 text-xs text-kivski-text outline-none focus:border-kivski-defender"
-          >
-            {checkpoints.length === 0 && (
-              <option value="">(no checkpoints)</option>
-            )}
+          {checkpoints.length === 0 && (
+            <div className="rounded border border-dashed border-kivski-border px-2 py-3 text-center text-[11px] text-kivski-muted">
+              No checkpoints on disk yet. Start training to create one.
+            </div>
+          )}
+          <div className="flex max-h-72 flex-col gap-1 overflow-y-auto pr-0.5">
             {checkpoints.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} · ep {c.step}
-              </option>
+              <CheckpointCard
+                key={c.id}
+                ckpt={c}
+                active={selectedCkpt === c.id}
+                onClick={() => setSelectedCkpt(c.id)}
+              />
             ))}
-          </select>
+          </div>
           <button
             type="button"
             className="btn"
@@ -481,8 +673,20 @@ const TrainingTab = () => {
                 id: selectedCkpt,
               })
             }
+            aria-label="Load selected checkpoint"
           >
-            Load Selected
+            Load selected
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() =>
+              send("save checkpoint (auto)", { type: "save_checkpoint" })
+            }
+            disabled={busy !== null}
+            title="Trainer auto-saves periodically — this is a soft hint, not a forced save."
+          >
+            Save Checkpoint
           </button>
         </div>
       </section>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import MatchHeader from "@/components/MatchHeader";
 import LeftSidebar from "@/components/LeftSidebar";
 import RightSidebar from "@/components/RightSidebar";
@@ -8,7 +8,12 @@ import DebugToggles from "@/components/DebugToggles";
 import RoundTimeline from "@/components/RoundTimeline";
 import TrainingPanel from "@/components/TrainingPanel";
 import SettingsDrawer from "@/components/SettingsDrawer";
-import { getTrainingStatus, subscribeMatch } from "@/lib/api-client";
+import AgentDetailModal from "@/components/AgentDetailModal";
+import {
+  getTrainingGoalSpec,
+  getTrainingStatus,
+  subscribeMatch,
+} from "@/lib/api-client";
 import { useStore } from "@/lib/store";
 
 /**
@@ -16,15 +21,33 @@ import { useStore } from "@/lib/store";
  * running. Clicking opens the settings drawer on the Training tab so a
  * curious user can see what's going on without learning the rest of the
  * Advanced UI. Stays hidden when training is idle (no clutter).
+ *
+ * Surfaces the active training goal title + the latest win-rate vs the
+ * random baseline so a glance at the pill tells the user both *what*
+ * the trainer is optimising for and *how it's going* — without having
+ * to open the drawer.
  */
 const TrainingPill = () => {
   const uiMode = useStore((s) => s.uiMode);
   const running = useStore((s) => s.trainingStatus.running);
   const episode = useStore((s) => s.trainingStatus.episode);
+  const trainingGoal = useStore((s) => s.trainingGoal);
+  const metricsHistory = useStore((s) => s.metricsHistory);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const setSettingsTab = useStore((s) => s.setSettingsTab);
 
+  // Latest non-null WR vs random for the trailing chip.
+  const latestWr = useMemo(() => {
+    for (let i = metricsHistory.length - 1; i >= 0; i--) {
+      const v = metricsHistory[i].winrateVsRandom;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return undefined;
+  }, [metricsHistory]);
+
   if (uiMode !== "simple" || !running) return null;
+
+  const spec = getTrainingGoalSpec(trainingGoal);
 
   return (
     <button
@@ -34,11 +57,24 @@ const TrainingPill = () => {
         setSettingsOpen(true);
       }}
       className="fixed bottom-20 right-4 z-30 inline-flex items-center gap-2 rounded-full border border-kivski-defender/40 bg-kivski-panel/95 px-3 py-1.5 text-[11px] text-kivski-text shadow-lg backdrop-blur transition-colors hover:border-kivski-defender hover:bg-kivski-panel"
-      title="Training is running. Click to see details."
+      title={`Training is running. Goal: ${spec.title}. Click to see details.`}
+      aria-label={`Training running: ${spec.title}, episode ${episode}`}
     >
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-kivski-hp animate-pulse-slow" />
-      <span className="font-medium text-kivski-defender">Training…</span>
+      <span className="font-medium text-kivski-defender">Training</span>
       <span className="stat text-kivski-muted">ep {episode}</span>
+      <span className="text-kivski-muted">·</span>
+      <span className="truncate text-kivski-text" style={{ maxWidth: "10rem" }}>
+        {spec.title}
+      </span>
+      {typeof latestWr === "number" && (
+        <>
+          <span className="text-kivski-muted">·</span>
+          <span className="stat text-kivski-text" aria-label={`Win rate vs random: ${latestWr.toFixed(2)}`}>
+            WR {latestWr.toFixed(2)}
+          </span>
+        </>
+      )}
     </button>
   );
 };
@@ -338,6 +374,7 @@ const App = () => {
 
       {/* Global overlays — always mounted */}
       <SettingsDrawer />
+      <AgentDetailModal />
       <TrainingPill />
       <OnboardingTooltip />
     </div>

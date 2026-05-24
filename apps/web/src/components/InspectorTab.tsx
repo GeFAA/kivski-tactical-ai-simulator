@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 import {
+  resolveAgentName,
   selectSelectedAgent,
   selectSelectedInspection,
   useStore,
@@ -193,18 +194,25 @@ const InspectorTab = () => {
   const inspection = useStore(selectSelectedInspection);
   const allMessages = useStore((s) => s.recentMessages);
   const agents = useStore((s) => s.agents);
+  const customAgentNames = useStore((s) => s.customAgentNames);
 
   const receivedMessages = useMemo(() => {
     if (!agent) return [];
     return allMessages.filter((m) => m.toIds.includes(agent.id)).slice(0, 6);
   }, [agent, allMessages]);
 
-  /** Translate raw agent ids to friendly "Y-3" / "B-7" display names. */
+  /** Translate raw agent ids to friendly "Y-3" / "B-7" (or custom) names. */
   const nameOf = useMemo(() => {
     const lookup = new Map<string, string>();
-    for (const a of agents) lookup.set(a.id, a.name);
+    for (const a of agents) {
+      lookup.set(a.id, resolveAgentName(a, customAgentNames));
+    }
     return (id: string): string => lookup.get(id) ?? id;
-  }, [agents]);
+  }, [agents, customAgentNames]);
+
+  const displayName = agent
+    ? resolveAgentName(agent, customAgentNames)
+    : "";
 
   if (!agent) {
     return (
@@ -245,7 +253,7 @@ const InspectorTab = () => {
               }`}
             />
             <span className={`truncate font-semibold ${teamColor}`}>
-              {agent.name}
+              {displayName}
             </span>
             {!agent.isAlive && (
               <span className="pill bg-kivski-hp-low/15 text-kivski-hp-low">

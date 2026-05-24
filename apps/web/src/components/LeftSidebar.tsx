@@ -41,11 +41,20 @@ const weaponShort = (a: AgentSnapshot): string => {
   }
 };
 
-const PlayerRow = ({ a }: { a: AgentSnapshot }) => {
+/**
+ * Compact (Simple-mode) agent card. One line per agent: team dot ·
+ * resolved name · HP-bar · weapon shortname. Clicking opens the
+ * AgentDetailModal via ``openAgentDetail`` so the user can read the
+ * full dossier and rename the agent. Kept deliberately small so a 5v5
+ * sidebar still fits a short laptop screen without scrolling.
+ */
+const CompactPlayerRow = ({ a }: { a: AgentSnapshot }) => {
+  const customName = useStore((s) => s.customAgentNames[a.id]);
   const selectedId = useStore((s) => s.selectedAgentId);
-  const selectAgent = useStore((s) => s.selectAgent);
+  const openAgentDetail = useStore((s) => s.openAgentDetail);
   const isSelected = selectedId === a.id;
   const isAttacker = a.side === "attacker";
+  const displayName = customName && customName.length > 0 ? customName : a.name;
 
   const hpPct = Math.max(0, Math.min(100, a.hp));
   const hpBarColor = hpPct < 33 ? "bg-kivski-hp-low" : "bg-kivski-hp";
@@ -56,7 +65,65 @@ const PlayerRow = ({ a }: { a: AgentSnapshot }) => {
   return (
     <button
       type="button"
-      onClick={() => selectAgent(isSelected ? null : a.id)}
+      data-agent-card
+      data-agent-id={a.id}
+      onClick={() => openAgentDetail(a.id)}
+      className={`group flex w-full items-center gap-2 rounded-sm border border-kivski-border border-l-2 ${accent} bg-kivski-panel-2 px-2 py-1 text-left text-[11px] transition-colors ${
+        isSelected
+          ? "ring-1 ring-inset ring-kivski-defender/60 bg-[#1d2738]"
+          : "hover:bg-[#1c2535]"
+      } ${a.isAlive ? "" : "opacity-50"}`}
+    >
+      <span
+        className={`inline-block h-2 w-2 shrink-0 rounded-full ${
+          isAttacker ? "bg-kivski-attacker" : "bg-kivski-defender"
+        }`}
+      />
+      <span className="min-w-0 flex-1 truncate font-medium text-kivski-text">
+        {displayName}
+      </span>
+      <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-sm bg-[#0f131a]">
+        <div
+          className={`h-full ${hpBarColor} transition-all`}
+          style={{ width: `${hpPct}%` }}
+        />
+      </div>
+      <span className="stat shrink-0 text-[10px] text-kivski-muted">
+        {weaponShort(a)}
+      </span>
+      {a.hasBomb && (
+        <span className="pill bg-kivski-bomb/20 text-kivski-bomb">C4</span>
+      )}
+    </button>
+  );
+};
+
+/**
+ * Advanced-mode agent card. Adds money + K/D/A row on top of the
+ * compact layout so power users still get the at-a-glance economy /
+ * scoreboard view. Click handler matches the compact card so the
+ * AgentDetailModal opens consistently from both modes.
+ */
+const PlayerRow = ({ a }: { a: AgentSnapshot }) => {
+  const customName = useStore((s) => s.customAgentNames[a.id]);
+  const selectedId = useStore((s) => s.selectedAgentId);
+  const openAgentDetail = useStore((s) => s.openAgentDetail);
+  const isSelected = selectedId === a.id;
+  const isAttacker = a.side === "attacker";
+  const displayName = customName && customName.length > 0 ? customName : a.name;
+
+  const hpPct = Math.max(0, Math.min(100, a.hp));
+  const hpBarColor = hpPct < 33 ? "bg-kivski-hp-low" : "bg-kivski-hp";
+  const accent = isAttacker
+    ? "border-l-kivski-attacker"
+    : "border-l-kivski-defender";
+
+  return (
+    <button
+      type="button"
+      data-agent-card
+      data-agent-id={a.id}
+      onClick={() => openAgentDetail(a.id)}
       className={`group w-full rounded-sm border border-kivski-border border-l-2 ${accent} bg-kivski-panel-2 px-2 py-1.5 text-left transition-colors ${
         isSelected ? "ring-1 ring-inset ring-kivski-defender/60 bg-[#1d2738]" : "hover:bg-[#1c2535]"
       } ${a.isAlive ? "" : "opacity-50"}`}
@@ -68,7 +135,7 @@ const PlayerRow = ({ a }: { a: AgentSnapshot }) => {
               isAttacker ? "bg-kivski-attacker" : "bg-kivski-defender"
             }`}
           />
-          <span className="truncate text-xs font-medium">{a.name}</span>
+          <span className="truncate text-xs font-medium">{displayName}</span>
           {a.hasBomb && (
             <span className="pill bg-kivski-bomb/20 text-kivski-bomb">C4</span>
           )}
@@ -176,11 +243,12 @@ const TeamBlock = ({
 };
 
 /**
- * Compact team summary used in Simple mode. One row per team with the
- * team dot, the human-readable name, and the alive count. No per-agent
- * cards, no economy bar, no weapon list — those live in Advanced mode.
+ * Simple-mode team block. Shows the same per-agent cards as Advanced
+ * but rendered with the compact one-line row (team-dot · name · HP-bar
+ * · weapon). The header keeps the alive-count + side hint so the user
+ * still knows who is attacking / defending at a glance.
  */
-const SimpleTeamRow = ({
+const SimpleTeamBlock = ({
   team,
   players,
 }: {
@@ -196,27 +264,33 @@ const SimpleTeamRow = ({
         ? "defending"
         : "—";
   return (
-    <div className="panel flex items-center justify-between px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <span className={`h-2.5 w-2.5 rounded-full ${TEAM_DOT_CLASS[team]}`} />
-        <div className="leading-tight">
-          <div className={`text-sm font-semibold ${TEAM_COLOR_CLASS[team]}`}>
+    <section className="panel flex min-h-0 flex-1 flex-col">
+      <header className="flex items-center justify-between border-b border-kivski-border px-2.5 py-1.5">
+        <div className="flex items-center gap-2">
+          <span className={`h-2.5 w-2.5 rounded-full ${TEAM_DOT_CLASS[team]}`} />
+          <span className={`text-xs font-semibold ${TEAM_COLOR_CLASS[team]}`}>
             {TEAM_LABEL[team]}
+          </span>
+        </div>
+        <div className="text-right leading-tight">
+          <div className="stat text-[11px] font-semibold text-kivski-text">
+            {aliveCount}/{players.length}
           </div>
-          <div className="text-[10px] uppercase tracking-widest text-kivski-muted">
+          <div className="text-[9px] uppercase tracking-widest text-kivski-muted">
             {roleHint}
           </div>
         </div>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-1.5">
+        {players.length === 0 ? (
+          <div className="px-1 py-6 text-center text-xs text-kivski-muted">
+            No agents yet.
+          </div>
+        ) : (
+          players.map((p) => <CompactPlayerRow key={p.id} a={p} />)
+        )}
       </div>
-      <div className="text-right leading-tight">
-        <div className="stat text-base font-semibold text-kivski-text">
-          {aliveCount}/{players.length}
-        </div>
-        <div className="text-[10px] uppercase tracking-widest text-kivski-muted">
-          alive
-        </div>
-      </div>
-    </div>
+    </section>
   );
 };
 
@@ -228,8 +302,8 @@ const LeftSidebar = () => {
   if (uiMode === "simple") {
     return (
       <aside className="flex min-h-0 flex-col gap-2">
-        <SimpleTeamRow team="yellow" players={yellow} />
-        <SimpleTeamRow team="blue" players={blue} />
+        <SimpleTeamBlock team="yellow" players={yellow} />
+        <SimpleTeamBlock team="blue" players={blue} />
       </aside>
     );
   }

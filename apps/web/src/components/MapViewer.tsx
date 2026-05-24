@@ -228,16 +228,23 @@ const drawMap = (
 //   facing arrow ─── triangle on body edge in facing direction
 //   body circle  ─── 1.1 unit radius, team coloured
 //   bomb / kit   ─── small icon overlay above-right of body
-//   name label   ─── dark chip "A0"/"B5" at y = +2.0
+//   name label   ─── small chip "Y0"/"B5" at y = +2.0 (50% smaller than v1)
 //   hp bar       ─── thin coloured bar at y = +3.2
 //   selection    ─── pulsing white ring at z = -1
 //
 // Sizes are in world units (the world container is scaled to fit the
 // map's WxH); the Pixi resolution keeps text crisp.
+//
+// Name-label sizing note (v2.1): the chip used to render at ~12px / 1.7
+// world units which was visually dominant — half of the map's real estate
+// at typical zoom levels was just text. We now render at 9px and scale
+// down so the effective height is ~0.55 world units (about 50% smaller
+// than v1). The chip background and padding scale with it so the look
+// stays consistent.
 
 const NAME_SCALE = 1; // world-unit sizing; Text fontSize is in world units
 
-/** Short label like "A0" / "B5" derived from the agent id. */
+/** Short label like "Y0" / "B5" derived from the agent id (fallback default). */
 const shortName = (a: AgentSnapshot): string => {
   // Backend ids look like "agent_0" .. "agent_9". Use the team
   // initial + idx so labels are 2 chars at most and packing stays nice.
@@ -245,6 +252,21 @@ const shortName = (a: AgentSnapshot): string => {
   const idx = idMatch ? idMatch[1] : "?";
   const prefix = a.team === "yellow" ? "Y" : "B";
   return `${prefix}${idx}`;
+};
+
+/**
+ * Resolve the on-map display name for an agent. Honours the user-
+ * provided custom name (e.g. "Falastin") if present, otherwise falls
+ * back to ``a.name`` from the backend or the short ``Y0``/``B5`` label
+ * if the backend hasn't yet sent a proper name (e.g. during the WS
+ * handshake). We also clamp the visible label at 12 chars so a
+ * runaway nickname doesn't blow out the map.
+ */
+const resolveMapLabel = (a: AgentSnapshot, customName: string | undefined): string => {
+  const raw = customName && customName.length > 0 ? customName : a.name;
+  const trimmed = raw && raw.length > 0 ? raw : shortName(a);
+  if (trimmed.length <= 12) return trimmed;
+  return `${trimmed.slice(0, 11)}…`;
 };
 
 // ----- Weapon silhouette palette (v2 polish) ----------------------------
@@ -661,7 +683,11 @@ interface PlayerRenderState {
 // We deliberately exclude:
 //   - facing  (only updates the weaponLayer.rotation, applied per-tick)
 //   - planting / defusing (handled via progress ring in the ticker)
-const _visualKey = (a: AgentSnapshot, isSelected: boolean): string =>
+const _visualKey = (
+  a: AgentSnapshot,
+  isSelected: boolean,
+  customName: string | undefined,
+): string =>
   [
     a.side,
     a.team,
@@ -670,6 +696,10 @@ const _visualKey = (a: AgentSnapshot, isSelected: boolean): string =>
     a.weapons[a.activeWeaponIdx]?.kind ?? "none",
     a.hasBomb ? 1 : 0,
     a.hasDefuseKit ? 1 : 0,
+    // Including the resolved label here so a rename causes the chip
+    // to redraw at the new size on the very next tick.
+    customName ?? "",
+    a.name,
   ].join("|");
 
 const buildPlayerNodes = (layer: Container, a: AgentSnapshot): PlayerNodes => {
@@ -739,23 +769,25 @@ const buildPlayerNodes = (layer: Container, a: AgentSnapshot): PlayerNodes => {
 
   const nameBg = new Graphics();
   nameBg.zIndex = 4;
-  // Render text at a "natural" pixel size (12px) and scale it down so
-  // it occupies ~1.4 world units. This bypasses Pixi v8's tendency to
-  // produce blurry tiny-font glyph atlases when fontSize <= 2.
+  // Render text at 10px (was 12px) and scale it down at a tighter ratio
+  // so the chip occupies ~0.8 world units instead of 1.7 — about half
+  // the v1 footprint. Pixi v8 still avoids blurry sub-pixel atlases
+  // because we're rendering at 10px @ resolution 2.
   const nameText = new Text({
     text: shortName(a),
     style: new TextStyle({
       fontFamily: "ui-monospace, Menlo, Consolas, monospace",
-      fontSize: 12 * NAME_SCALE,
+      fontSize: 10 * NAME_SCALE,
       fill: COLORS.labelText,
       fontWeight: "700",
       align: "center",
-      letterSpacing: 0.2,
+      letterSpacing: 0.1,
     }),
     resolution: 2,
   });
   nameText.anchor.set(0.5, 0);
-  nameText.scale.set(1 / 7); // 12px → ~1.7 world units total height
+  // 10px @ scale 1/12 → ~0.83 world units total height (was ~1.7).
+  nameText.scale.set(1 / 12);
   nameText.position.set(0, 2.0);
   nameText.zIndex = 5;
 
@@ -851,6 +883,7 @@ const refreshPlayerVisuals = (
   nodes: PlayerNodes,
   a: AgentSnapshot,
   isSelected: boolean,
+  customName: string | undefined,
 ): void => {
   const color = sideColor(a.side);
   const r = 1.1;
@@ -921,24 +954,26 @@ const refreshPlayerVisuals = (
     nodes.kitIcon.visible = false;
   }
 
-  // Name label — short id, chip-style bg sized to text. `nameText.width`
-  // reports raw glyph-atlas pixels, so we multiply by `scale.x` to get
-  // its visible size in *world units*.
-  const label = shortName(a);
+  // Name label — resolved custom name (if set) or backend fallback,
+  // chip-style bg sized to text. `nameText.width` reports raw glyph-
+  // atlas pixels, so we multiply by `scale.x` to get its visible size
+  // in *world units*. Chip padding is tighter than v1 to match the
+  // smaller font (chip now reads as a subtle tag, not a billboard).
+  const label = resolveMapLabel(a, customName);
   if (nodes.nameText.text !== label) nodes.nameText.text = label;
   // Name alpha is also touched by the death-fade ticker; this is the base.
   if (a.isAlive) nodes.nameText.alpha = 1;
   const textW = nodes.nameText.width * nodes.nameText.scale.x;
   const textH = nodes.nameText.height * nodes.nameText.scale.y;
-  const padX = 0.32;
-  const padY = 0.18;
-  const w = Math.max(1.6, textW + padX * 2);
+  const padX = 0.2;
+  const padY = 0.1;
+  const w = Math.max(1.0, textW + padX * 2);
   const h = textH + padY * 2;
   nodes.nameBg.clear();
   nodes.nameBg
-    .roundRect(-w / 2, 2.0 - padY, w, h, 0.3)
-    .fill({ color: COLORS.labelBg, alpha: 0.82 })
-    .stroke({ color, width: 0.1, alpha: 0.65 });
+    .roundRect(-w / 2, 2.0 - padY, w, h, 0.2)
+    .fill({ color: COLORS.labelBg, alpha: 0.78 })
+    .stroke({ color, width: 0.08, alpha: 0.6 });
 
   // Selection ring — drawn at fixed radius, alpha pulse handled in ticker.
   nodes.selection.clear();
@@ -1044,7 +1079,8 @@ const ingestPlayersSnapshot = (
   bomb: BombSnapshot,
   events: EventItem[],
   messages: MessageItem[],
-  onSelect: (id: string | null) => void,
+  customAgentNames: Record<string, string>,
+  onAgentClick: (id: string) => void,
 ): void => {
   const seen = new Set<string>();
   const newPrev = new Map<string, AgentPosKeyframe>();
@@ -1112,17 +1148,19 @@ const ingestPlayersSnapshot = (
     nodes.lastAlive = a.isAlive;
 
     // ---- Click handler — re-wire each tick so the closure captures the
-    // latest selection state without leaking a listener registry.
+    // latest selection state without leaking a listener registry. The
+    // click now opens the AgentDetailModal (which also calls
+    // ``selectAgent`` under the hood), so the user always lands in the
+    // inspector for the dot they tapped, even on a re-click.
     nodes.container.removeAllListeners();
     const targetId = a.id;
-    nodes.container.on("pointertap", () =>
-      onSelect(isSelected ? null : targetId),
-    );
+    nodes.container.on("pointertap", () => onAgentClick(targetId));
     nodes.selected = isSelected;
 
-    const vk = _visualKey(a, isSelected);
+    const customName = customAgentNames[a.id];
+    const vk = _visualKey(a, isSelected, customName);
     if (vk !== nodes.visualKey) {
-      refreshPlayerVisuals(nodes, a, isSelected);
+      refreshPlayerVisuals(nodes, a, isSelected, customName);
       nodes.visualKey = vk;
     }
     // Facing is *cheap* (just a transform), update each snapshot so the
@@ -1567,7 +1605,6 @@ const MapViewer = () => {
   /** Stable, key-addressable container registry so overlays can re-mount safely. */
   const layerRegistry = useRef<Map<string, Container>>(new Map());
 
-  const selectAgent = useStore((s) => s.selectAgent);
   const mapName = useStore((s) => s.mapName);
   const showFov = useStore((s) => s.showFov);
   const showSound = useStore((s) => s.showSound);
@@ -1718,7 +1755,8 @@ const MapViewer = () => {
             state.bomb,
             state.eventFeed,
             state.recentMessages,
-            selectAgent,
+            state.customAgentNames,
+            state.openAgentDetail,
           );
           updateBombOnMap(bombState, bombLayer, state.bomb);
         } catch (err) {
@@ -1778,7 +1816,7 @@ const MapViewer = () => {
         }
       }
     };
-  }, [mapName, selectAgent]);
+  }, [mapName]);
 
   // FoV overlay (selected agent only). Lightweight enough to handle here.
   // The cone is wall-clipped against `mapDataRef.current`; we read it

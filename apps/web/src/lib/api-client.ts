@@ -45,6 +45,107 @@ export interface CheckpointInfo {
   step: number;
   createdAt: string;
   notes?: string | null;
+  /**
+   * Source kind from the backend's :func:`_entry_for` sidecar parse —
+   * ``"best"`` for the promoted ``best.pt`` entry, otherwise
+   * ``"checkpoint"`` (per-run snapshot). Drives the icon + label
+   * choice in the UI (crown for best, camera for snapshot).
+   */
+  kind?: "best" | "checkpoint" | string;
+  /**
+   * Raw epoch-seconds (or undefined) when the checkpoint was written.
+   * Used to derive a human-friendly "Xm ago" / "yesterday" label so
+   * the dropdown reads like "Best so far (1247 eps · 4m ago)" instead
+   * of "best · 1247".
+   */
+  timestamp?: number;
+  /**
+   * Pre-rendered friendly label like
+   * "⭐ Best so far" / "📸 Snapshot @ ep 500" / "Latest checkpoint".
+   * The dropdown renders this directly so the same translation runs in
+   * one place (api-client) regardless of which consumer (drawer card
+   * list, footer dropdown) shows it.
+   */
+  prettyLabel?: string;
+  /**
+   * Pre-rendered "Xm ago" / "yesterday" / "" fragment so the card can
+   * show the age as a small secondary line without re-computing it on
+   * every render.
+   */
+  ageLabel?: string;
+}
+
+// ---------- Time-since helper ----------
+
+/**
+ * Translate either an ISO-8601 timestamp string or epoch-seconds float
+ * into a compact "Xs ago / Xm ago / Xh ago / yesterday / 3d ago" label.
+ * Returns an empty string when the input can't be parsed.
+ */
+export function formatTimeAgo(input: string | number | null | undefined): string {
+  if (input === null || input === undefined || input === "") return "";
+  let ms: number;
+  if (typeof input === "number") {
+    // Backend ships epoch-seconds (now_unix()) → multiply by 1000.
+    ms = input < 1e12 ? input * 1000 : input;
+  } else {
+    const numeric = Number(input);
+    if (Number.isFinite(numeric)) {
+      ms = numeric < 1e12 ? numeric * 1000 : numeric;
+    } else {
+      const parsed = Date.parse(input);
+      if (Number.isNaN(parsed)) return "";
+      ms = parsed;
+    }
+  }
+  const diffMs = Date.now() - ms;
+  if (!Number.isFinite(diffMs)) return "";
+  if (diffMs < 0) return "just now";
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return sec <= 5 ? "just now" : `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day === 1) return "yesterday";
+  if (day < 7) return `${day}d ago`;
+  const week = Math.floor(day / 7);
+  if (week < 5) return `${week}w ago`;
+  return `${Math.floor(day / 30)}mo ago`;
+}
+
+/**
+ * Build the human-friendly label shown in the checkpoint dropdown.
+ * The rules (in order):
+ *   - kind == "best" or name == "best"  → "⭐ Best so far"
+ *   - name endsWith "_latest" / starts with "latest" → "🕐 Latest checkpoint"
+ *   - name like "snapshot_ep_<N>" or "main_ep_<N>"   → "📸 Snapshot @ ep N"
+ *   - fallback → "Checkpoint @ ep N" (or just the name when no episode)
+ */
+function buildPrettyCheckpointLabel(
+  name: string,
+  kind: string | undefined,
+  step: number,
+): string {
+  const lower = name.toLowerCase();
+  const isBest = kind === "best" || lower === "best";
+  if (isBest) return "Best so far";
+  if (lower === "latest" || lower.endsWith("_latest")) {
+    return "Latest checkpoint";
+  }
+  // Common trainer naming: "snapshot_ep_500" / "main_ep_128" / "ep_42".
+  const epMatch = name.match(/(?:^|_)ep[_-]?(\d+)/i);
+  const ep = epMatch ? Number(epMatch[1]) : step;
+  if (lower.startsWith("snapshot")) {
+    return ep ? `Snapshot @ ep ${ep}` : "Snapshot";
+  }
+  if (lower.startsWith("main")) {
+    return ep ? `Checkpoint @ ep ${ep}` : `Checkpoint (${name})`;
+  }
+  // Generic fallback so unknown checkpoint naming schemes still read
+  // sensibly.
+  return ep ? `Checkpoint @ ep ${ep}` : name;
 }
 
 /**
@@ -132,6 +233,7 @@ interface RawCheckpointsResponse {
     episodes?: number | null;
     timestamp?: string | number | null;
     metadata?: Record<string, unknown> | null;
+    kind?: string | null;
   }>;
   loaded?: string | null;
 }
@@ -153,15 +255,35 @@ export async function getCheckpoints(): Promise<CheckpointInfo[]> {
     return list.map((c) => {
       const name = String(c?.name ?? "unnamed");
       const ts = c?.timestamp;
+      const step = typeof c?.episodes === "number" ? c.episodes : 0;
+      const kind =
+        typeof c?.kind === "string" && c.kind.length > 0 ? c.kind : "checkpoint";
+      const timestampNum =
+        typeof ts === "number"
+          ? ts
+          : typeof ts === "string" && Number.isFinite(Number(ts))
+            ? Number(ts)
+            : typeof ts === "string"
+              ? Date.parse(ts) / 1000
+              : undefined;
+      const ageLabel = formatTimeAgo(ts ?? null);
+      const prettyLabel = buildPrettyCheckpointLabel(name, kind, step);
       return {
         id: name,
         name,
-        step: typeof c?.episodes === "number" ? c.episodes : 0,
+        step,
         createdAt: ts == null ? "" : String(ts),
         notes:
           c?.metadata && typeof c.metadata === "object" && Object.keys(c.metadata).length > 0
             ? JSON.stringify(c.metadata)
             : null,
+        kind,
+        timestamp:
+          typeof timestampNum === "number" && Number.isFinite(timestampNum)
+            ? timestampNum
+            : undefined,
+        ageLabel,
+        prettyLabel,
       };
     });
   } catch {
@@ -190,6 +312,79 @@ export async function getTrainingConfigs(): Promise<TrainingConfigInfo[]> {
   } catch {
     return [];
   }
+}
+
+// ---------- Training goals ----------
+
+/**
+ * High-level training intent the user picks instead of a raw config
+ * filename. Each goal maps to one of the YAML presets under
+ * ``configs/`` — the choice is the user-facing UI surface, the raw
+ * filename remains the wire/CLI surface.
+ *
+ * Mapping (chosen so the *biggest* speedup hits the "Watch progress
+ * fast" button without sacrificing the viewer's 5v5 distribution):
+ *   - ``watch``    → ``configs/turbo.yaml``   (5v5, frame_skip=6, 48 envs)
+ *   - ``balanced`` → ``configs/viewer.yaml``  (5v5, frame_skip=4, 32 envs)
+ *   - ``quality``  → ``configs/fast.yaml``    (curriculum 1v1→5v5)
+ */
+export type TrainingGoal = "watch" | "balanced" | "quality";
+
+export interface TrainingGoalSpec {
+  id: TrainingGoal;
+  icon: string;
+  title: string;
+  blurb: string;
+  /** Wire config path. Mirrors the ``id`` field in ``TrainingConfigInfo``. */
+  configPath: string;
+}
+
+export const TRAINING_GOALS: readonly TrainingGoalSpec[] = [
+  {
+    id: "watch",
+    icon: "👁",
+    title: "Watch progress fast",
+    blurb: "See agents stop wandering randomly within 1–3 hours.",
+    configPath: "configs/turbo.yaml",
+  },
+  {
+    id: "balanced",
+    icon: "⚖",
+    title: "Balanced (recommended)",
+    blurb: "Good trade-off between learning speed and final quality.",
+    configPath: "configs/viewer.yaml",
+  },
+  {
+    id: "quality",
+    icon: "🏆",
+    title: "Max final skill",
+    blurb: "Best end-game policy. Takes longer before the viewer pops.",
+    configPath: "configs/fast.yaml",
+  },
+] as const;
+
+/** Default goal for first-time visitors who have never picked one. */
+export const DEFAULT_TRAINING_GOAL: TrainingGoal = "balanced";
+
+/** Lookup a goal spec by id. Falls back to ``balanced`` for unknown ids. */
+export function getTrainingGoalSpec(id: TrainingGoal | string | null | undefined): TrainingGoalSpec {
+  const match = TRAINING_GOALS.find((g) => g.id === id);
+  return match ?? TRAINING_GOALS[1]; // balanced is index 1
+}
+
+/**
+ * Translate a config path (the backend's :class:`TrainingConfigInfo.id`)
+ * back to a training-goal id. Returns ``null`` for paths that don't map
+ * to one of the three curated goals — used to drive the "override"
+ * visual state when the user picks a raw config in the Advanced reveal.
+ */
+export function inferGoalFromConfigPath(path: string | null | undefined): TrainingGoal | null {
+  if (!path) return null;
+  const lower = path.toLowerCase();
+  for (const goal of TRAINING_GOALS) {
+    if (goal.configPath.toLowerCase() === lower) return goal.id;
+  }
+  return null;
 }
 
 /**

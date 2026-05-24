@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { DEFAULT_TRAINING_GOAL, type TrainingGoal } from "./api-client";
 import type {
   AgentInspection,
   AgentSnapshot,
@@ -134,6 +135,29 @@ interface UIState {
   settingsOpen: boolean;
   /** Last-active tab inside the settings drawer (persisted). */
   settingsTab: SettingsTab;
+  /**
+   * When true, the AgentDetailModal is mounted and visible for the
+   * currently-selected agent. Clicking an agent dot on the map OR an
+   * agent card in the sidebar both flip this on after setting the
+   * selected agent id.
+   */
+  agentDetailOpen: boolean;
+  /**
+   * User-overridden display names per agent id. Persisted in
+   * localStorage so the user's chosen handles (e.g. "Falastin" instead
+   * of "Y0") survive a page reload and a match reset. An empty/missing
+   * entry means "use the backend's ``agent.name`` as-is".
+   */
+  customAgentNames: Record<string, string>;
+  /**
+   * High-level training intent the user picked (one of three buttons in
+   * the Training drawer tab). Maps to a raw config path via
+   * :const:`TRAINING_GOALS` in ``api-client.ts``. Persisted so the user
+   * doesn't have to re-pick on every page load — the dedicated
+   * ``kivski-training-goal`` localStorage key is mirrored by
+   * :func:`setTrainingGoal` for easy DevTools inspection.
+   */
+  trainingGoal: TrainingGoal;
 }
 
 interface InspectionState {
@@ -228,6 +252,25 @@ interface Actions {
   setSettingsOpen: (open: boolean) => void;
   /** Switch the active tab inside the settings drawer. */
   setSettingsTab: (tab: SettingsTab) => void;
+  /**
+   * Open / close the per-agent detail modal. ``openAgentDetail``
+   * additionally calls ``selectAgent`` so the modal always renders the
+   * agent the user just clicked on.
+   */
+  openAgentDetail: (id: string) => void;
+  closeAgentDetail: () => void;
+  /**
+   * Persist a user-chosen display name for an agent. Pass an empty
+   * string to clear the override (reverts to the backend's ``name``).
+   * The change is mirrored to localStorage so it survives reload.
+   */
+  setCustomAgentName: (id: string, name: string) => void;
+  /**
+   * Switch the persisted training-goal pick. Mirrors the choice to a
+   * dedicated ``kivski-training-goal`` localStorage key so the value is
+   * obvious in DevTools.
+   */
+  setTrainingGoal: (goal: TrainingGoal) => void;
 
   reset: () => void;
 }
@@ -271,6 +314,9 @@ const initialUI: UIState = {
   uiMode: "simple",
   settingsOpen: false,
   settingsTab: "match",
+  agentDetailOpen: false,
+  customAgentNames: {},
+  trainingGoal: DEFAULT_TRAINING_GOAL,
 };
 
 const initialInspection: InspectionState = { byAgent: {}, attentionWeights: {} };
@@ -348,6 +394,7 @@ type PersistedUI = Pick<
   | "rightTab"
   | "uiMode"
   | "settingsTab"
+  | "trainingGoal"
 >;
 
 const PERSIST_STORAGE_KEY = "kivski-ui-state";
@@ -369,6 +416,58 @@ const readUiModeOverride = (): UiMode | null => {
     return null;
   } catch {
     return null;
+  }
+};
+
+/**
+ * Read the dedicated ``kivski-training-goal`` localStorage key written
+ * by :func:`setTrainingGoal`. Returns ``null`` when absent / invalid so
+ * callers can fall back to the persisted bundle or the default.
+ */
+const readTrainingGoalOverride = (): TrainingGoal | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem("kivski-training-goal");
+    if (raw === "watch" || raw === "balanced" || raw === "quality") return raw;
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Storage key for per-agent custom display names. Persisted as a flat
+ * JSON object ``{[agentId]: name}`` so a user's preferred labels (e.g.
+ * "Falastin" instead of "Y0") survive a reload, a match reset, and a
+ * full backend restart.
+ */
+const CUSTOM_NAMES_STORAGE_KEY = "kivski-agent-names";
+
+const readCustomAgentNames = (): Record<string, string> => {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_NAMES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim().length > 0) {
+        out[k] = v;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+};
+
+const writeCustomAgentNames = (names: Record<string, string>): void => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CUSTOM_NAMES_STORAGE_KEY, JSON.stringify(names));
+  } catch {
+    /* ignore quota / private-mode errors */
   }
 };
 
@@ -542,15 +641,45 @@ export const useStore = create<AppState>()(persist((set) => ({
   },
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setSettingsTab: (tab) => set({ settingsTab: tab }),
+  openAgentDetail: (id) => set({ selectedAgentId: id, agentDetailOpen: true }),
+  closeAgentDetail: () => set({ agentDetailOpen: false }),
+  setCustomAgentName: (id, name) =>
+    set((s) => {
+      const trimmed = name.trim();
+      const next = { ...s.customAgentNames };
+      if (trimmed.length === 0) {
+        delete next[id];
+      } else {
+        next[id] = trimmed;
+      }
+      // Mirror to a dedicated localStorage key so it persists across
+      // reloads (and is independent of the bundled ``kivski-ui-state``
+      // persist payload).
+      writeCustomAgentNames(next);
+      return { customAgentNames: next };
+    }),
+  setTrainingGoal: (goal) => {
+    set({ trainingGoal: goal });
+    try {
+      window.localStorage.setItem("kivski-training-goal", goal);
+    } catch {
+      /* ignore quota / private-mode errors */
+    }
+  },
 
   reset: () =>
-    set({
+    set((s) => ({
       ...initialMatch,
       ...initialUI,
       ...initialInspection,
       ...initialFeed,
       ...initialMetrics,
-    }),
+      // Preserve user preferences across resets — these are NOT match
+      // data, they're durable settings.
+      customAgentNames: s.customAgentNames,
+      uiMode: s.uiMode,
+      trainingGoal: s.trainingGoal,
+    })),
 }), {
   name: PERSIST_STORAGE_KEY,
   version: PERSIST_STORAGE_VERSION,
@@ -569,18 +698,24 @@ export const useStore = create<AppState>()(persist((set) => ({
     rightTab: state.rightTab,
     uiMode: state.uiMode,
     settingsTab: state.settingsTab,
+    trainingGoal: state.trainingGoal,
   }),
   merge: (persisted, current) => {
-    // Honour the dedicated ``kivski-ui-mode`` localStorage key if it
-    // disagrees with the bundled persist payload — this lets us treat
-    // that key as the source of truth (it's the one ``setUiMode``
-    // writes, and the one a user is most likely to inspect / tweak).
-    const override = readUiModeOverride();
+    // Honour the dedicated ``kivski-ui-mode`` and ``kivski-training-goal``
+    // localStorage keys if they disagree with the bundled persist
+    // payload — those keys are the source of truth (written by
+    // ``setUiMode`` / ``setTrainingGoal``).
+    const uiModeOverride = readUiModeOverride();
+    const goalOverride = readTrainingGoalOverride();
     const merged = {
       ...current,
       ...(persisted as Partial<AppState> | undefined),
     } as AppState;
-    if (override !== null) merged.uiMode = override;
+    if (uiModeOverride !== null) merged.uiMode = uiModeOverride;
+    if (goalOverride !== null) merged.trainingGoal = goalOverride;
+    // Load the dedicated custom-agent-names blob on init so the user's
+    // chosen display names are available before the first render.
+    merged.customAgentNames = readCustomAgentNames();
     return merged;
   },
 }));
@@ -621,6 +756,22 @@ export const selectSelectedAgent = (s: AppState): AgentSnapshot | null => {
 export const selectSelectedInspection = (s: AppState): AgentInspection | null => {
   if (!s.selectedAgentId) return null;
   return s.byAgent[s.selectedAgentId] ?? null;
+};
+
+/**
+ * Resolved display name for an agent: returns the user-overridden name
+ * if one is set in ``customAgentNames`` (e.g. "Falastin"), otherwise
+ * falls back to the backend-supplied ``agent.name`` (e.g. "Y0"). Used by
+ * the sidebar, the map label, the inspector, and the detail modal so a
+ * rename propagates instantly everywhere.
+ */
+export const resolveAgentName = (
+  agent: Pick<AgentSnapshot, "id" | "name">,
+  customNames: Record<string, string>,
+): string => {
+  const custom = customNames[agent.id];
+  if (custom && custom.length > 0) return custom;
+  return agent.name;
 };
 
 /** Per-team economy snapshot (totals only). */
