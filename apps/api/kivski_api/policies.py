@@ -41,7 +41,6 @@ from kivski_sim.types import (
     BuyChoice,
     CommAction,
     MicroAction,
-    MoveIntent,
 )
 
 __all__ = [
@@ -203,7 +202,11 @@ class RandomPolicy(PolicyAdapter):
     ) -> dict[int, ActionBundle]:
         out: dict[int, ActionBundle] = {}
         for agent_id in observations:
-            move = MoveIntent(int(self._rng.integers(0, len(MoveIntent))))
+            # v0.4: continuous move uniformly in [-1, 1]^2 with a 20% HOLD rate.
+            if float(self._rng.random()) < 0.20:
+                move_vec = np.zeros(2, dtype=np.float32)
+            else:
+                move_vec = self._rng.uniform(-1.0, 1.0, size=2).astype(np.float32)
             micro = MicroAction(int(self._rng.integers(0, len(MicroAction))))
             # Avoid spamming INTERACT (it freezes the agent in place) -- only
             # ~10% of ticks should pick it.
@@ -221,7 +224,7 @@ class RandomPolicy(PolicyAdapter):
             else:
                 buy = BuyChoice.NONE
             out[int(agent_id)] = ActionBundle(
-                move=move,
+                move_vec=move_vec,
                 micro=micro,
                 aim_target=-1,
                 comm=comm,
@@ -292,22 +295,25 @@ class ScriptedPolicy(PolicyAdapter):
         out: dict[int, ActionBundle] = {}
         for agent_id in observations:
             if self._sprint_bias:
-                # Rush: move forward most ticks, occasional INTERACT to plant.
-                move = MoveIntent(int(self._rng.integers(1, len(MoveIntent))))
+                # Rush: pick a random heading, sprint forward most ticks.
+                angle = float(self._rng.uniform(0.0, 2.0 * np.pi))
+                move_vec = np.array(
+                    [np.cos(angle), np.sin(angle)], dtype=np.float32
+                )
                 micro = MicroAction.INTERACT if float(self._rng.random()) < 0.08 else MicroAction.SPRINT
                 comm = CommAction.SUGGEST_ATTACK if self._rng.random() < 0.02 else CommAction.NONE
                 buy = BuyChoice.SMG if self._rng.random() < 0.02 else BuyChoice.NONE
             else:
-                # Hold: mostly stay put, crouch-hold, occasional INTERACT to defuse.
+                # Hold: mostly HOLD, occasional small drift.
                 if self._rng.random() < 0.20:
-                    move = MoveIntent(int(self._rng.integers(0, len(MoveIntent))))
+                    move_vec = self._rng.uniform(-1.0, 1.0, size=2).astype(np.float32)
                 else:
-                    move = MoveIntent.HOLD
+                    move_vec = np.zeros(2, dtype=np.float32)
                 micro = MicroAction.INTERACT if float(self._rng.random()) < 0.06 else MicroAction.CROUCH_HOLD
                 comm = CommAction.SUGGEST_FALLBACK if self._rng.random() < 0.02 else CommAction.NONE
                 buy = BuyChoice.HEAVY_PISTOL if self._rng.random() < 0.02 else BuyChoice.NONE
             out[int(agent_id)] = ActionBundle(
-                move=move,
+                move_vec=move_vec,
                 micro=micro,
                 aim_target=-1,
                 comm=comm,

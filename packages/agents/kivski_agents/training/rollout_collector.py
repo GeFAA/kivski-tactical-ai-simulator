@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 from collections import Counter
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import torch
@@ -214,14 +215,20 @@ class RolloutCollector:
             # of shape ``[L, ne * team_size, H]`` -- we snapshot it before the
             # forward pass so the buffer can replay the GRU during PPO updates.
             pre_hidden = self._batched_hidden.detach().clone()
-            yellow_actions_np, yellow_payloads_np, log_probs_np, value_np, new_hidden, entropy_np = (
-                self._forward_training_policy(
-                    yellow_obs=yellow_obs,
-                    received_comm=received_comm,
-                    joint_obs=joint_obs,
-                    mask=yellow_mask,
-                    pre_hidden=pre_hidden,
-                )
+            (
+                yellow_move_np,
+                yellow_disc_np,
+                yellow_payloads_np,
+                log_probs_np,
+                value_np,
+                new_hidden,
+                entropy_np,
+            ) = self._forward_training_policy(
+                yellow_obs=yellow_obs,
+                received_comm=received_comm,
+                joint_obs=joint_obs,
+                mask=yellow_mask,
+                pre_hidden=pre_hidden,
             )
 
             # The forward call uses ``pre_hidden`` as input and returns
@@ -231,16 +238,25 @@ class RolloutCollector:
 
             # ---- 5) Forward opponent (BLUE) ----------------------------
             blue_obs_dict = {name: obs_batch[name] for name in self.blue_names}
-            blue_actions_np, blue_payloads_np = self._forward_opponent(blue_obs_dict)
+            blue_move_np, blue_disc_np, blue_payloads_np = self._forward_opponent(blue_obs_dict)
 
             # ---- 6) Merge actions / payloads ---------------------------
-            merged_actions: dict[str, np.ndarray] = {}
+            # The env expects ``{agent: {"move": [N_envs, D], "discrete":
+            # [N_envs, n_heads]}}`` per agent (decoded one tick at a time
+            # inside ``VecEnvWrapper.step``).
+            merged_actions: dict[str, dict[str, np.ndarray]] = {}
             merged_payloads: dict[str, np.ndarray] = {}
             for j, name in enumerate(self.yellow_names):
-                merged_actions[name] = yellow_actions_np[:, j, :]  # [N_envs, n_heads]
-                merged_payloads[name] = yellow_payloads_np[:, j, :]  # [N_envs, value_dim]
+                merged_actions[name] = {
+                    "move": yellow_move_np[:, j, :],  # [N_envs, move_dim]
+                    "discrete": yellow_disc_np[:, j, :],  # [N_envs, n_heads]
+                }
+                merged_payloads[name] = yellow_payloads_np[:, j, :]
             for j, name in enumerate(self.blue_names):
-                merged_actions[name] = blue_actions_np[:, j, :]
+                merged_actions[name] = {
+                    "move": blue_move_np[:, j, :],
+                    "discrete": blue_disc_np[:, j, :],
+                }
                 merged_payloads[name] = blue_payloads_np[:, j, :]
 
             # ---- 7) Step the vec env -----------------------------------
@@ -253,6 +269,12 @@ class RolloutCollector:
             yellow_rewards_np = np.zeros((ne, self.team_size), dtype=np.float32)
             for j, name in enumerate(self.yellow_names):
                 yellow_rewards_np[:, j] = step_out.rewards[name]
+
+            # Pack the mixed action storage for the buffer.
+            actions_payload = {
+                "move": torch.from_numpy(yellow_move_np).to(self.device),
+                "discrete": torch.from_numpy(yellow_disc_np).to(self.device),
+            }
 
             # Per-agent alive mask (1 = alive, 0 = dead or done).
             # The mask is per-tick, taken *after* the env step but before any
@@ -287,7 +309,7 @@ class RolloutCollector:
                 step=t,
                 observations=yellow_obs.view(ne, self.team_size, self.obs_dim),
                 joint_obs=joint_obs,
-                actions=torch.from_numpy(yellow_actions_np).to(self.device),
+                actions=actions_payload,
                 log_probs=torch.from_numpy(log_probs_np).to(self.device),
                 value=torch.from_numpy(value_np).to(self.device),
                 rewards=torch.from_numpy(yellow_rewards_np).to(self.device),
@@ -300,8 +322,8 @@ class RolloutCollector:
             )
 
             # ---- 10) Tally comm usage ----------------------------------
-            # Discrete comm action is index 2 in the action vector.
-            yellow_comm_actions = yellow_actions_np[:, :, 2].reshape(-1)
+            # v0.4 discrete head layout: [micro=0, comm=1, buy=2, aim=3].
+            yellow_comm_actions = yellow_disc_np[:, :, 1].reshape(-1)
             self._comm_counter.update(int(x) for x in yellow_comm_actions.tolist())
             # Mean payload norm (across YELLOW, this tick).
             payload_norms = np.linalg.norm(yellow_payloads_np.reshape(-1, cv_dim), axis=-1)
@@ -383,11 +405,20 @@ class RolloutCollector:
         joint_obs: torch.Tensor,  # [N_envs, joint_obs_dim]
         mask: torch.Tensor,  # [N_envs * team_size]
         pre_hidden: torch.Tensor,  # [L, N_envs * team_size, H]
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, torch.Tensor, np.ndarray]:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        torch.Tensor,
+        np.ndarray,
+    ]:
         """Run the training model over all YELLOW agents across all envs.
 
         Returns numpy arrays sized:
-            * actions: ``[N_envs, team_size, n_heads]``
+            * move_actions: ``[N_envs, team_size, continuous_move_dim]`` float32
+            * discrete_actions: ``[N_envs, team_size, n_heads]`` int64
             * payloads: ``[N_envs, team_size, cv_dim]``
             * log_probs: ``[N_envs, team_size]``
             * value: ``[N_envs]``
@@ -397,6 +428,7 @@ class RolloutCollector:
         ne = self.vec_env.num_envs
         ts = self.team_size
         cv_dim = int(self.buffer.comm_value_dim)
+        move_dim = int(self.buffer.continuous_move_dim)
 
         with torch.no_grad():
             out = self.runner.model.act(
@@ -409,28 +441,36 @@ class RolloutCollector:
             )
             value = self.runner.model.value_head(joint_obs).view(ne).detach()
 
-        actions = out["actions"].view(ne, ts, self.n_heads).cpu().numpy().astype(np.int64)
+        move_actions = (
+            out["move_actions"].view(ne, ts, move_dim).cpu().numpy().astype(np.float32)
+        )
+        disc_actions = (
+            out["discrete_actions"].view(ne, ts, self.n_heads).cpu().numpy().astype(np.int64)
+        )
         log_probs = out["log_probs"].view(ne, ts).cpu().numpy().astype(np.float32)
         entropy = out["entropy"].view(ne, ts).cpu().numpy().astype(np.float32)
         payloads = out["comm_payload"].view(ne, ts, cv_dim).cpu().numpy().astype(np.float32)
         new_hidden = out["new_hidden"]
         value_np = value.cpu().numpy().astype(np.float32)
-        return actions, payloads, log_probs, value_np, new_hidden, entropy
+        return move_actions, disc_actions, payloads, log_probs, value_np, new_hidden, entropy
 
     def _forward_opponent(
         self,
         blue_obs_per_env: dict[str, np.ndarray],
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run the opponent sampler env-by-env and return stacked arrays.
 
         Returns:
-            * actions: ``[N_envs, team_size, n_heads]``
+            * move_actions: ``[N_envs, team_size, move_dim]`` float32
+            * discrete_actions: ``[N_envs, team_size, n_heads]`` int64
             * payloads: ``[N_envs, team_size, cv_dim]``
         """
         ne = self.vec_env.num_envs
         ts = self.team_size
         cv_dim = int(self.buffer.comm_value_dim)
-        actions_out = np.zeros((ne, ts, self.n_heads), dtype=np.int64)
+        move_dim = int(self.buffer.continuous_move_dim)
+        move_out = np.zeros((ne, ts, move_dim), dtype=np.float32)
+        disc_out = np.zeros((ne, ts, self.n_heads), dtype=np.int64)
         payloads_out = np.zeros((ne, ts, cv_dim), dtype=np.float32)
 
         for env_i in range(ne):
@@ -440,19 +480,18 @@ class RolloutCollector:
             actions_dict, payloads_dict = self.opponent.act(obs_for_env)
             for j, name in enumerate(self.blue_names):
                 if name in actions_dict:
-                    arr = np.asarray(actions_dict[name], dtype=np.int64).reshape(-1)
-                    if arr.shape[0] < self.n_heads:
-                        padded = np.zeros(self.n_heads, dtype=np.int64)
-                        padded[: arr.shape[0]] = arr
-                        arr = padded
-                    actions_out[env_i, j] = arr[: self.n_heads]
+                    move_arr, disc_arr = _split_baseline_action(
+                        actions_dict[name], move_dim=move_dim, n_heads=self.n_heads
+                    )
+                    move_out[env_i, j] = move_arr
+                    disc_out[env_i, j] = disc_arr
                 if payloads_dict and name in payloads_dict:
                     pl = np.asarray(payloads_dict[name], dtype=np.float32).reshape(-1)
                     if pl.shape[0] >= cv_dim:
                         payloads_out[env_i, j] = pl[:cv_dim]
                     else:
                         payloads_out[env_i, j, : pl.shape[0]] = pl
-        return actions_out, payloads_out
+        return move_out, disc_out, payloads_out
 
     def _gather_received_comm(
         self,
@@ -495,6 +534,52 @@ class RolloutCollector:
 # ---------------------------------------------------------------------------
 # Tiny standalone helper (kept here so the trainer can stay lean)
 # ---------------------------------------------------------------------------
+
+
+def _split_baseline_action(
+    action: Any,
+    *,
+    move_dim: int,
+    n_heads: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Normalize a baseline action into (move_vec, discrete_heads).
+
+    Accepts the v0.4 dict ``{"move": [D], "discrete": [n_heads]}`` as well as
+    a legacy flat int64 vector ``[move_idx, micro, comm, buy, aim]`` (which
+    gets mapped via :data:`kivski_sim.types.MOVE_VECTORS`). Any missing
+    heads are zero-padded.
+    """
+    move = np.zeros(move_dim, dtype=np.float32)
+    disc = np.zeros(n_heads, dtype=np.int64)
+    if isinstance(action, dict):
+        if "move" in action:
+            mv = np.asarray(action["move"], dtype=np.float32).reshape(-1)
+            move[: min(move_dim, mv.shape[0])] = mv[: min(move_dim, mv.shape[0])]
+        if "discrete" in action:
+            d = np.asarray(action["discrete"], dtype=np.int64).reshape(-1)
+            disc[: min(n_heads, d.shape[0])] = d[: min(n_heads, d.shape[0])]
+        return move, disc
+    arr = np.asarray(action).reshape(-1)
+    # Legacy flat encoding: assume first entry is the legacy MoveIntent.
+    if arr.shape[0] == 5:
+        from kivski_sim.types import MOVE_VECTORS, MoveIntent
+
+        try:
+            intent = MoveIntent(int(arr[0]))
+        except (ValueError, TypeError):
+            intent = MoveIntent.HOLD
+        dx, dy = MOVE_VECTORS[intent]
+        move[0] = float(dx)
+        if move_dim >= 2:
+            move[1] = float(dy)
+        tail = np.asarray(arr[1:], dtype=np.int64)
+        disc[: min(n_heads, tail.shape[0])] = tail[: min(n_heads, tail.shape[0])]
+        return move, disc
+    # Length-4 = pure discrete heads (already in v0.4 format).
+    if arr.shape[0] == n_heads:
+        disc[:] = np.asarray(arr, dtype=np.int64)
+        return move, disc
+    return move, disc
 
 
 def required_buffer_capacity(num_envs: int, rollout_steps: int, team_size: int) -> int:

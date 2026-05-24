@@ -5,6 +5,8 @@ from kivski_agents.factory import (
     build_model,
     build_trainer,
     default_action_dims,
+    default_action_spec,
+    discrete_action_dims,
     infer_joint_obs_dim,
 )
 from kivski_agents.mappo import MAPPOLoss, MAPPOTrainer
@@ -38,6 +40,8 @@ __all__ = [
     "build_model",
     "build_trainer",
     "default_action_dims",
+    "default_action_spec",
+    "discrete_action_dims",
     "infer_joint_obs_dim",
 ]
 

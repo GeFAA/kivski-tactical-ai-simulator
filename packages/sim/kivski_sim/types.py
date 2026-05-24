@@ -203,7 +203,14 @@ WEAPONS: dict[WeaponClass, WeaponStats] = {
 
 
 class MoveIntent(IntEnum):
-    """Hierarchical movement: choose a coarse compass direction or hold."""
+    """Legacy 8-way + HOLD discrete movement enum (v0.3 and earlier).
+
+    Kept around as a backward-compatibility helper: baselines and debug
+    code can still reference ``MOVE_VECTORS[MoveIntent.N]`` to obtain the
+    matching unit vector for the new continuous :attr:`ActionBundle.move_vec`.
+    The live action API is now a continuous 2D vector; see
+    :class:`ActionBundle`.
+    """
 
     HOLD = 0
     N = 1
@@ -227,6 +234,16 @@ MOVE_VECTORS: dict[MoveIntent, tuple[float, float]] = {
     MoveIntent.W: (-1.0, 0.0),
     MoveIntent.NW: (-0.7071, -0.7071),
 }
+
+
+def move_intent_to_vec(intent: MoveIntent) -> np.ndarray:
+    """Translate a legacy :class:`MoveIntent` into the new continuous vector.
+
+    Returns a ``(2,) float32`` ndarray in the unit square (the diagonals
+    sit on the unit circle so the engine doesn't clamp them).
+    """
+    dx, dy = MOVE_VECTORS[intent]
+    return np.array([dx, dy], dtype=np.float32)
 
 
 class MicroAction(IntEnum):
@@ -272,11 +289,24 @@ class BuyChoice(IntEnum):
     ARMOR = 7
 
 
+def _default_move_vec() -> np.ndarray:
+    """Default-HOLD continuous move vector (zeros, float32, shape (2,))."""
+    return np.zeros(2, dtype=np.float32)
+
+
 @dataclass(slots=True)
 class ActionBundle:
-    """One agent's full action this tick (autoregressive heads collapsed)."""
+    """One agent's full action this tick.
 
-    move: MoveIntent = MoveIntent.HOLD
+    v0.4 breaking change: ``move`` is now a continuous 2D vector
+    ``move_vec`` in ``[-1, 1]^2`` (magnitude in (0, 1] = speed factor,
+    direction = normalised). ``move_vec == (0, 0)`` is the HOLD command.
+    The legacy ``MoveIntent`` enum + ``MOVE_VECTORS`` table are kept for
+    backward-compat callers (baselines, debug tools) -- map a discrete
+    intent via :func:`move_intent_to_vec` if needed.
+    """
+
+    move_vec: np.ndarray = field(default_factory=_default_move_vec)
     micro: MicroAction = MicroAction.DEFAULT
     aim_target: int = -1  # -1 = no specific target; otherwise agent id
     comm: CommAction = CommAction.NONE

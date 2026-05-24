@@ -103,7 +103,7 @@ class PolicyRunner:
         observations: dict[str, np.ndarray],
         received_comms: dict[str, dict[int, np.ndarray]] | None = None,
         masks: dict[str, float] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, np.ndarray]]:
         """Run one inference step.
 
         Args:
@@ -115,8 +115,9 @@ class PolicyRunner:
 
         Returns:
             ``(actions, comm_payloads)``:
-                * ``actions``: ``{agent_name: int64[num_heads]}`` ready for
-                  :meth:`KivskiParallelEnv.step`.
+                * ``actions``: ``{agent_name: {"move": float32[D], "discrete":
+                  int64[num_heads]}}`` ready for
+                  :meth:`KivskiParallelEnv.step` (v0.4 mixed action space).
                 * ``comm_payloads``: ``{agent_name: float32[comm_value_dim]}``
                   ready for :meth:`KivskiParallelEnv.step_with_comms`. The
                   value is already multiplied by the gate, so a closed gate
@@ -184,13 +185,14 @@ class PolicyRunner:
         )
         self._hidden = out["new_hidden"]
 
-        actions_np = out["actions"].cpu().numpy().astype(np.int64)
+        move_np = out["move_actions"].cpu().numpy().astype(np.float32)
+        disc_np = out["discrete_actions"].cpu().numpy().astype(np.int64)
         payload_np = out["comm_payload"].cpu().numpy().astype(np.float32)
 
-        actions: dict[str, np.ndarray] = {}
+        actions: dict[str, dict[str, np.ndarray]] = {}
         comm_payloads: dict[str, np.ndarray] = {}
         for name, idx in self._agent_to_index.items():
-            actions[name] = actions_np[idx]
+            actions[name] = {"move": move_np[idx], "discrete": disc_np[idx]}
             comm_payloads[name] = payload_np[idx]
         return actions, comm_payloads
 
@@ -272,6 +274,7 @@ class PolicyBundle:
             "gumbel_temp",
             "gru_layers",
             "actor_embedding_dim",
+            "continuous_move_dim",
         }
         kwargs = {k: v for k, v in init.items() if k in allowed}
         model = KivskiActorCritic(**kwargs)
@@ -344,6 +347,7 @@ class PolicyBundle:
                 "obs_dim": int(model.obs_dim),
                 "joint_obs_dim": int(model.joint_obs_dim),
                 "action_dims": list(model.action_dims),
+                "continuous_move_dim": int(model.continuous_move_dim),
                 "hidden_size": int(model.hidden_size),
                 "comm_signature_dim": int(model.comm_signature_dim),
                 "comm_value_dim": int(model.comm_value_dim),

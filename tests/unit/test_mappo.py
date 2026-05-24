@@ -33,7 +33,7 @@ HIDDEN = 16
 COMM_VAL = 8
 COMM_SIG = 8
 COMM_HEADS = 2
-ACTION_DIMS = [9, 6, 9, 8, 2 * N_AGENTS + 1]
+ACTION_DIMS = [6, 9, 8, 2 * N_AGENTS + 1]  # v0.4 discrete heads only
 N_HEADS = len(ACTION_DIMS)
 
 
@@ -147,7 +147,10 @@ def test_buffer_minibatch_iter_yields_right_size() -> None:
         assert bs <= minibatch_size
         assert batch.observations.shape == (bs, OBS_DIM)
         assert batch.joint_observations.shape == (bs, JOINT_OBS_DIM)
-        assert batch.actions.shape == (bs, N_HEADS)
+        # v0.4 mixed-action minibatch.
+        assert isinstance(batch.actions, dict)
+        assert batch.actions["move"].shape == (bs, 2)
+        assert batch.actions["discrete"].shape == (bs, N_HEADS)
         assert batch.old_log_probs.shape == (bs,)
         assert batch.old_values.shape == (bs,)
         assert batch.returns.shape == (bs,)
@@ -224,7 +227,10 @@ def _populate_buffer_via_model(model: KivskiActorCritic, buf: RolloutBuffer) -> 
         recv = torch.zeros(N_ENVS * N_AGENTS, COMM_VAL)
         with torch.no_grad():
             out = model.act(flat_obs, h0, recv, joint_obs=None)
-        actions = out["actions"].reshape(N_ENVS, N_AGENTS, N_HEADS)
+        # v0.4 mixed actions: pack the buffer entry as a dict.
+        move_actions = out["move_actions"].reshape(N_ENVS, N_AGENTS, model.continuous_move_dim)
+        disc_actions = out["discrete_actions"].reshape(N_ENVS, N_AGENTS, N_HEADS)
+        actions = {"move": move_actions, "discrete": disc_actions}
         log_probs = out["log_probs"].reshape(N_ENVS, N_AGENTS)
         # Value is per-env via the centralised joint observation.
         value_out = model.value_head(joint).detach().squeeze(-1)
@@ -330,5 +336,6 @@ def test_trainer_save_load_roundtrip(tmp_path: Path) -> None:
     fresh_model.eval()
     out_a = model.act(obs, h0, recv, deterministic=True)
     out_b = fresh_model.act(obs, h0, recv, deterministic=True)
-    assert torch.equal(out_a["actions"], out_b["actions"])
+    assert torch.equal(out_a["discrete_actions"], out_b["discrete_actions"])
+    assert torch.allclose(out_a["move_actions"], out_b["move_actions"], atol=1e-5)
     assert torch.allclose(out_a["log_probs"], out_b["log_probs"], atol=1e-5)

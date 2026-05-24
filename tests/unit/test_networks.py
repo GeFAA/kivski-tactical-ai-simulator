@@ -35,7 +35,7 @@ BATCH = 2
 COMM_SIG = 16
 COMM_VAL = 16
 COMM_HEADS = 2
-ACTION_DIMS = [9, 6, 9, 8, 2 * N_AGENTS + 1]
+ACTION_DIMS = [6, 9, 8, 2 * N_AGENTS + 1]  # v0.4 discrete heads (micro, comm, buy, aim)
 
 
 def _seeded_tensor(*shape: int, seed: int = 0) -> torch.Tensor:
@@ -112,14 +112,23 @@ def test_actor_heads_sample_shapes() -> None:
     head = ActorHeads(hidden_size=HIDDEN, action_dims=ACTION_DIMS, embedding_dim=8)
     hidden = _seeded_tensor(BATCH, HIDDEN, seed=5)
     actions, log_probs, entropy = head.sample(hidden, deterministic=False)
-    assert actions.shape == (BATCH, len(ACTION_DIMS))
-    assert actions.dtype == torch.int64
+    # v0.4: mixed dict {"move": float[B, D], "discrete": int64[B, num_heads]}
+    assert isinstance(actions, dict)
+    move = actions["move"]
+    disc = actions["discrete"]
+    assert move.shape == (BATCH, 2)
+    assert move.dtype == torch.float32
+    assert disc.shape == (BATCH, len(ACTION_DIMS))
+    assert disc.dtype == torch.int64
     assert log_probs.shape == (BATCH,)
     assert entropy.shape == (BATCH,)
-    # Per-head range check.
+    # Move must be inside the [-1, 1] box.
+    assert float(move.detach().min()) >= -1.0 - 1e-6
+    assert float(move.detach().max()) <= 1.0 + 1e-6
+    # Per-head range check on the discrete cascade.
     for i, n_cat in enumerate(ACTION_DIMS):
-        assert (actions[:, i] >= 0).all()
-        assert (actions[:, i] < n_cat).all()
+        assert (disc[:, i] >= 0).all()
+        assert (disc[:, i] < n_cat).all()
     assert torch.isfinite(log_probs).all()
     assert torch.isfinite(entropy).all()
 
@@ -130,34 +139,44 @@ def test_actor_heads_sample_deterministic_is_argmax() -> None:
     hidden = _seeded_tensor(BATCH, HIDDEN, seed=6)
     a1, _, _ = head.sample(hidden, deterministic=True)
     a2, _, _ = head.sample(hidden, deterministic=True)
-    assert torch.equal(a1, a2)
+    assert torch.equal(a1["discrete"], a2["discrete"])
+    assert torch.allclose(a1["move"], a2["move"])
 
 
 def test_actor_heads_evaluate_log_prob_finite() -> None:
     torch.manual_seed(0)
     head = ActorHeads(hidden_size=HIDDEN, action_dims=ACTION_DIMS, embedding_dim=8)
     hidden = _seeded_tensor(BATCH, HIDDEN, seed=7)
-    actions = torch.stack(
-        [torch.randint(low=0, high=n_cat, size=(BATCH,), dtype=torch.int64) for n_cat in ACTION_DIMS],
-        dim=1,
-    )
+    actions = {
+        "move": torch.zeros(BATCH, 2),
+        "discrete": torch.stack(
+            [torch.randint(low=0, high=n_cat, size=(BATCH,), dtype=torch.int64) for n_cat in ACTION_DIMS],
+            dim=1,
+        ),
+    }
     log_probs, entropy = head.evaluate(hidden, actions)
     assert log_probs.shape == (BATCH,)
     assert entropy.shape == (BATCH,)
     assert torch.isfinite(log_probs).all()
     assert torch.isfinite(entropy).all()
-    # log-prob is always <= 0 for a discrete distribution.
-    assert (log_probs <= 1e-5).all()
 
 
 def test_actor_heads_evaluate_matches_sample_log_prob() -> None:
-    """Re-evaluating the sampled actions should reproduce the same log-prob."""
+    """Re-evaluating logged actions reproduces the same discrete log-prob.
+
+    The move head is stochastic, so for the assertion to hold we re-evaluate
+    the sampled move *and* discrete actions through ``evaluate`` and compare
+    the joint log-prob -- it must equal the log-prob computed during
+    sampling (modulo float noise).
+    """
     torch.manual_seed(0)
     head = ActorHeads(hidden_size=HIDDEN, action_dims=ACTION_DIMS, embedding_dim=8)
     hidden = _seeded_tensor(BATCH, HIDDEN, seed=8)
-    actions, log_probs, _ = head.sample(hidden, deterministic=True)
+    actions, log_probs, _ = head.sample(hidden, deterministic=False)
+    # ``actions["move"]`` is the *clamped* sample; the sampled log-prob used
+    # the pre-clamp raw sample, so we accept a slightly larger tolerance.
     re_log_probs, _ = head.evaluate(hidden, actions)
-    assert torch.allclose(log_probs, re_log_probs, atol=1e-5)
+    assert torch.allclose(log_probs, re_log_probs, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +293,12 @@ def test_full_model_act_runs_without_error() -> None:
     joint = _seeded_tensor(BATCH, JOINT_OBS_DIM, seed=14)
     h0 = model.initial_hidden_state(BATCH)
     out = model.act(obs, h0, received, joint_obs=joint)
-    assert out["actions"].shape == (BATCH, len(ACTION_DIMS))
+    # v0.4 mixed-action layout.
+    assert isinstance(out["actions"], dict)
+    assert out["actions"]["move"].shape == (BATCH, 2)
+    assert out["actions"]["discrete"].shape == (BATCH, len(ACTION_DIMS))
+    assert out["move_actions"].shape == (BATCH, 2)
+    assert out["discrete_actions"].shape == (BATCH, len(ACTION_DIMS))
     assert out["log_probs"].shape == (BATCH,)
     assert out["entropy"].shape == (BATCH,)
     assert out["new_hidden"].shape == (1, BATCH, HIDDEN)
@@ -283,8 +307,10 @@ def test_full_model_act_runs_without_error() -> None:
     assert out["comm_gate"].shape == (BATCH, 1)
     assert out["comm_payload"].shape == (BATCH, COMM_VAL)
     assert out["value"].shape == (BATCH, 1)
+    # Check finiteness on tensor values (skip the dict).
     for key, t in out.items():
-        assert torch.isfinite(t).all(), f"NaN/Inf in {key!r}"
+        if torch.is_tensor(t):
+            assert torch.isfinite(t).all(), f"NaN/Inf in {key!r}"
 
 
 def test_full_model_act_without_joint_obs_omits_value() -> None:

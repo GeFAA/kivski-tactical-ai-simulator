@@ -23,7 +23,6 @@ from kivski_sim.types import (
     BuyChoice,
     MatchOutcome,
     MicroAction,
-    MoveIntent,
     Phase,
     RoundOutcome,
     Side,
@@ -148,8 +147,12 @@ def test_same_seed_same_trajectory(small_cfg: KivskiConfig) -> None:
     def collect(seed: int) -> list[list[tuple[float, float]]]:
         eng = Engine(config=small_cfg, map_data=md, seed=seed)
         eng.reset()
-        # Deterministic action stream: everyone sprints north.
-        action = ActionBundle(move=MoveIntent.N, micro=MicroAction.SPRINT)
+        # Deterministic action stream: everyone sprints north (continuous
+        # move_vec pointing along -y).
+        action = ActionBundle(
+            move_vec=np.array([0.0, -1.0], dtype=np.float32),
+            micro=MicroAction.SPRINT,
+        )
         snapshots = []
         for _ in range(20):
             snap, _, done = eng.step(dict.fromkeys(range(20), action))

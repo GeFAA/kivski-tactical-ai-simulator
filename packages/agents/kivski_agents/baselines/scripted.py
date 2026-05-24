@@ -5,6 +5,10 @@ are deliberately simple. They are not meant to be hard for the learned MAPPO
 agents -- they only need to be *consistent* opponents that exercise the same
 observation/action contract the learned policies do.
 
+v0.4: both baselines emit the new mixed action dict ``{"move": float32[2],
+"discrete": int64[4]}`` and translate their old compass-based heuristics
+into a smooth continuous heading vector.
+
 Crucially, both baselines work exclusively off the **observation vector**
 exposed by :class:`kivski_sim.env.KivskiParallelEnv` via the schema in
 :mod:`kivski_sim.obs_decoder`. They never touch ``engine.state`` directly so
@@ -25,14 +29,12 @@ from kivski_sim.types import (
     BuyChoice,
     CommAction,
     MicroAction,
-    MoveIntent,
 )
 
 __all__ = ["ScriptedHoldBaseline", "ScriptedRushBaseline"]
 
 
-# Maximum integer in the action sub-spaces, mirroring the env's MultiDiscrete dims.
-_NUM_MOVE_INTENTS: int = len(MoveIntent)
+# Discrete-head cardinalities for clamping.
 _NUM_MICRO_ACTIONS: int = len(MicroAction)
 _NUM_COMM_ACTIONS: int = len(CommAction)
 _NUM_BUY_OPTIONS: int = len(BuyChoice)
@@ -43,40 +45,37 @@ _NUM_BUY_OPTIONS: int = len(BuyChoice)
 # ---------------------------------------------------------------------------
 
 
-def _compass_intent_from_dxdy(dx: float, dy: float) -> MoveIntent:
-    """Translate a (dx, dy) delta vector into the nearest 8-way compass intent.
+def _continuous_move(dx: float, dy: float, *, speed: float = 1.0) -> np.ndarray:
+    """Translate a desired (dx, dy) direction into a normalized 2-D move vec.
 
-    Returns :attr:`MoveIntent.HOLD` for the degenerate zero vector.
+    The vector is normalised to unit length and then multiplied by ``speed``
+    in ``[0, 1]``. The degenerate zero vector becomes HOLD ``(0, 0)``.
     """
-    if dx == 0.0 and dy == 0.0:
-        return MoveIntent.HOLD
-    # MoveIntent uses y-down convention (N = -y). Angle measured clockwise from N.
-    angle = math.atan2(dx, -dy)  # 0 = N, pi/2 = E, pi = S, -pi/2 = W
-    # Quantize to 8 directions.
-    sector = int(round(angle / (math.pi / 4.0))) % 8
-    return [
-        MoveIntent.N,  # 0
-        MoveIntent.NE,  # 1
-        MoveIntent.E,  # 2
-        MoveIntent.SE,  # 3
-        MoveIntent.S,  # 4
-        MoveIntent.SW,  # 5 (= -3 mod 8)
-        MoveIntent.W,  # 6 (= -2 mod 8)
-        MoveIntent.NW,  # 7 (= -1 mod 8)
-    ][sector]
+    mag = math.sqrt(dx * dx + dy * dy)
+    if mag < 1e-9:
+        return np.zeros(2, dtype=np.float32)
+    s = float(max(0.0, min(1.0, speed)))
+    return np.array([dx / mag * s, dy / mag * s], dtype=np.float32)
+
+
+def _hold_move() -> np.ndarray:
+    return np.zeros(2, dtype=np.float32)
 
 
 def _pack_action(
-    move: MoveIntent,
+    move: np.ndarray,
     micro: MicroAction,
     comm: CommAction,
     buy: BuyChoice,
     aim_target: int,
-) -> np.ndarray:
-    """Pack a five-component MultiDiscrete action as ``np.int64``."""
-    return np.array(
+) -> dict[str, np.ndarray]:
+    """Pack a mixed action dict for the v0.4 env action space."""
+    mv = np.asarray(move, dtype=np.float32).reshape(-1)[:2]
+    if mv.shape[0] < 2:
+        mv = _hold_move()
+    mv = np.clip(mv, -1.0, 1.0).astype(np.float32, copy=False)
+    disc = np.array(
         [
-            int(min(max(int(move), 0), _NUM_MOVE_INTENTS - 1)),
             int(min(max(int(micro), 0), _NUM_MICRO_ACTIONS - 1)),
             int(min(max(int(comm), 0), _NUM_COMM_ACTIONS - 1)),
             int(min(max(int(buy), 0), _NUM_BUY_OPTIONS - 1)),
@@ -84,6 +83,7 @@ def _pack_action(
         ],
         dtype=np.int64,
     )
+    return {"move": mv, "discrete": disc}
 
 
 def _pick_buy(money_norm: float, target_class: BuyChoice) -> BuyChoice:
@@ -224,15 +224,15 @@ class ScriptedHoldBaseline:
         self,
         observations: dict[str, np.ndarray],
         received_comms: dict[str, dict] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, np.ndarray]]:
         del received_comms  # unused
         agents = self._agent_names if self._agent_names else list(observations.keys())
-        actions: dict[str, np.ndarray] = {}
+        actions: dict[str, dict[str, np.ndarray]] = {}
         for name in agents:
             obs = observations.get(name)
             if obs is None:
                 actions[name] = _pack_action(
-                    MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+                    _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
                 )
                 continue
             try:
@@ -241,7 +241,7 @@ class ScriptedHoldBaseline:
                 # Defensive: if the obs vector is sized differently (custom
                 # ObservationConfig), fall back to a hold action.
                 actions[name] = _pack_action(
-                    MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+                    _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
                 )
                 continue
             actions[name] = self._act_one(decoded)
@@ -249,14 +249,18 @@ class ScriptedHoldBaseline:
 
     # ------------------------------------------------------------------
 
-    def _act_one(self, decoded: dict[str, Any]) -> np.ndarray:
+    def _act_one(self, decoded: dict[str, Any]) -> dict[str, np.ndarray]:
         if not _is_alive(decoded):
-            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
+            return _pack_action(
+                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+            )
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.HEAVY_PISTOL)
-            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0)
+            return _pack_action(
+                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0
+            )
 
         # ----- LIVE phase ------------------------------------------------
         site_name, dx, dy, dist = _nearest_bombsite(decoded)
@@ -271,15 +275,17 @@ class ScriptedHoldBaseline:
         if dist < self._hold_threshold:
             # On-site: crouch and hold the angle. If we see an enemy, fire.
             comm = CommAction.PING_LOCATION if enemy_slot is not None else CommAction.NONE
-            return _pack_action(MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
+            return _pack_action(
+                _hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
+            )
 
-        # Approach the chosen bombsite.
-        move_intent = _compass_intent_from_dxdy(dx, dy)
+        # Approach the chosen bombsite -- continuous move toward (dx, dy).
+        move = _continuous_move(dx, dy, speed=1.0)
         comm = CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.SUGGEST_ROTATE
         # Probabilistic comm suppression so the channel isn't perpetually saturated.
         if float(self._rng.random()) > 0.05:
             comm = CommAction.NONE
-        return _pack_action(move_intent, MicroAction.DEFAULT, comm, BuyChoice.NONE, aim_target)
+        return _pack_action(move, MicroAction.DEFAULT, comm, BuyChoice.NONE, aim_target)
 
 
 # ---------------------------------------------------------------------------
@@ -336,22 +342,22 @@ class ScriptedRushBaseline:
         self,
         observations: dict[str, np.ndarray],
         received_comms: dict[str, dict] | None = None,
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    ) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, np.ndarray]]:
         del received_comms
         agents = self._agent_names if self._agent_names else list(observations.keys())
-        actions: dict[str, np.ndarray] = {}
+        actions: dict[str, dict[str, np.ndarray]] = {}
         for name in agents:
             obs = observations.get(name)
             if obs is None:
                 actions[name] = _pack_action(
-                    MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+                    _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
                 )
                 continue
             try:
                 decoded = decode_observation(np.asarray(obs), schema=self._schema)
             except Exception:
                 actions[name] = _pack_action(
-                    MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+                    _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
                 )
                 continue
             site = self._target_sites.get(name, "A")
@@ -360,14 +366,18 @@ class ScriptedRushBaseline:
 
     # ------------------------------------------------------------------
 
-    def _act_one(self, decoded: dict[str, Any], target_site: str) -> np.ndarray:
+    def _act_one(self, decoded: dict[str, Any], target_site: str) -> dict[str, np.ndarray]:
         if not _is_alive(decoded):
-            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0)
+            return _pack_action(
+                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, BuyChoice.NONE, 0
+            )
 
         # ----- BUY phase -------------------------------------------------
         if _is_buy_phase(decoded):
             buy = _pick_buy(_money_norm(decoded), BuyChoice.SMG)
-            return _pack_action(MoveIntent.HOLD, MicroAction.DEFAULT, CommAction.NONE, buy, 0)
+            return _pack_action(
+                _hold_move(), MicroAction.DEFAULT, CommAction.NONE, buy, 0
+            )
 
         # ----- LIVE phase ------------------------------------------------
         dx, dy, dist = _bombsite_distance(decoded, target_site)
@@ -380,16 +390,18 @@ class ScriptedRushBaseline:
         # If we are the bomb carrier and on site -> plant.
         if on_site and carrier:
             return _pack_action(
-                MoveIntent.HOLD, MicroAction.INTERACT, CommAction.SUGGEST_ATTACK, BuyChoice.NONE, 0
+                _hold_move(), MicroAction.INTERACT, CommAction.SUGGEST_ATTACK, BuyChoice.NONE, 0
             )
 
         # On site but no bomb: hold and shoot.
         if on_site:
             comm = CommAction.CONTACT_ENEMY if enemy_slot is not None else CommAction.NONE
-            return _pack_action(MoveIntent.HOLD, MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target)
+            return _pack_action(
+                _hold_move(), MicroAction.CROUCH_HOLD, comm, BuyChoice.NONE, aim_target
+            )
 
-        # Rush toward the chosen site.
-        move_intent = _compass_intent_from_dxdy(dx, dy)
+        # Rush toward the chosen site -- continuous direction at full speed.
+        move = _continuous_move(dx, dy, speed=1.0)
         micro = MicroAction.SPRINT
         # Slow down ("DEFAULT") if we already see an enemy to improve accuracy.
         if enemy_slot is not None:
@@ -399,4 +411,4 @@ class ScriptedRushBaseline:
             comm = CommAction.SUGGEST_ATTACK
         if enemy_slot is not None and float(self._rng.random()) < 0.10:
             comm = CommAction.CONTACT_ENEMY
-        return _pack_action(move_intent, micro, comm, BuyChoice.NONE, aim_target)
+        return _pack_action(move, micro, comm, BuyChoice.NONE, aim_target)

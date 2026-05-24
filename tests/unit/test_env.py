@@ -27,7 +27,6 @@ from kivski_sim.types import (
     BuyChoice,
     CommAction,
     MicroAction,
-    MoveIntent,
     Phase,
     Side,
     Team,
@@ -67,9 +66,15 @@ def env(small_cfg: KivskiConfig) -> KivskiParallelEnv:
     return KivskiParallelEnv(config=small_cfg, map_name="dustline", seed=1234, map_data=load_map("dustline"))
 
 
-def _hold_actions(env: KivskiParallelEnv) -> dict[str, np.ndarray]:
-    """All-HOLD action dict for every agent."""
-    return {name: np.zeros(5, dtype=np.int64) for name in env.possible_agents}
+def _hold_actions(env: KivskiParallelEnv) -> dict[str, dict[str, np.ndarray]]:
+    """All-HOLD action dict for every agent (v0.4 mixed format)."""
+    return {
+        name: {
+            "move": np.zeros(2, dtype=np.float32),
+            "discrete": np.zeros(4, dtype=np.int64),
+        }
+        for name in env.possible_agents
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -102,19 +107,28 @@ def test_observation_space_dimension(env: KivskiParallelEnv, small_cfg: KivskiCo
         assert space.shape == (dim,)
 
 
-def test_action_space_is_multidiscrete(env: KivskiParallelEnv) -> None:
+def test_action_space_is_mixed_dict(env: KivskiParallelEnv) -> None:
+    """v0.4 action space is a ``Dict`` of a Box (move) + MultiDiscrete (rest)."""
     space = env.action_space("agent_0")
-    assert isinstance(space, spaces.MultiDiscrete)
-    # [move, micro, comm, buy, aim_target]
-    nvec = np.asarray(space.nvec)
-    assert nvec.shape == (5,)
-    assert int(nvec[0]) == len(MoveIntent)
-    assert int(nvec[1]) == len(MicroAction)
-    assert int(nvec[2]) == len(CommAction)
-    assert int(nvec[3]) == len(BuyChoice)
+    assert isinstance(space, spaces.Dict)
+    assert set(space.spaces.keys()) == {"move", "discrete"}
+    # Continuous move head: Box(-1, 1, (2,)).
+    move_space = space.spaces["move"]
+    assert isinstance(move_space, spaces.Box)
+    assert move_space.shape == (2,)
+    assert float(move_space.low.min()) == pytest.approx(-1.0)
+    assert float(move_space.high.max()) == pytest.approx(1.0)
+    # Discrete heads: [micro, comm, buy, aim_target].
+    disc_space = space.spaces["discrete"]
+    assert isinstance(disc_space, spaces.MultiDiscrete)
+    nvec = np.asarray(disc_space.nvec)
+    assert nvec.shape == (4,)
+    assert int(nvec[0]) == len(MicroAction)
+    assert int(nvec[1]) == len(CommAction)
+    assert int(nvec[2]) == len(BuyChoice)
     # aim_target = 2*team_size + 1 (no-target + 2*team_size-1 others + self).
     expected_aim = 2 * 2 + 1  # team_size=2 in the fixture
-    assert int(nvec[4]) == expected_aim
+    assert int(nvec[3]) == expected_aim
 
 
 # ---------------------------------------------------------------------------
@@ -257,16 +271,19 @@ def test_deterministic_with_seed(small_cfg: KivskiConfig) -> None:
     for name in env_a.possible_agents:
         np.testing.assert_allclose(obs_a0[name], obs_b0[name])
 
-    # Deterministic action stream: cycle through a handful of MultiDiscrete vectors.
+    # Deterministic action stream: cycle through a handful of mixed actions
+    # (continuous move + discrete heads). Identical seeds -> identical states.
     rng = np.random.default_rng(0)
     n_agents = len(env_a.possible_agents)
-    nvec = np.asarray(env_a.action_space("agent_0").nvec)
-    action_stream: list[dict[str, np.ndarray]] = []
+    space = env_a.action_space("agent_0")
+    nvec = np.asarray(space.spaces["discrete"].nvec)
+    action_stream: list[dict[str, dict[str, np.ndarray]]] = []
     for _ in range(15):
-        step_actions: dict[str, np.ndarray] = {}
+        step_actions: dict[str, dict[str, np.ndarray]] = {}
         for i in range(n_agents):
-            vals = (rng.integers(low=np.zeros_like(nvec), high=nvec)).astype(np.int64)
-            step_actions[agent_name(i)] = vals
+            mv = rng.uniform(-1.0, 1.0, size=2).astype(np.float32)
+            disc = rng.integers(low=np.zeros_like(nvec), high=nvec).astype(np.int64)
+            step_actions[agent_name(i)] = {"move": mv, "discrete": disc}
         action_stream.append(step_actions)
 
     for actions in action_stream:
@@ -405,7 +422,11 @@ def test_step_with_comms_payload_in_info(env: KivskiParallelEnv) -> None:
     env.engine.state.phase_ticks_remaining = 50
     actions = _hold_actions(env)
     # Make agent 0 emit a comm message with a payload; teammates should see it.
-    actions["agent_0"] = np.array([0, 0, int(CommAction.PING_LOCATION), 0, 0], dtype=np.int64)
+    # Discrete heads (v0.4): [micro, comm, buy, aim_target].
+    actions["agent_0"] = {
+        "move": np.zeros(2, dtype=np.float32),
+        "discrete": np.array([0, int(CommAction.PING_LOCATION), 0, 0], dtype=np.int64),
+    }
     payload = np.array([0.1, 0.2, 0.3], dtype=np.float32)
     _obs, _r, _t, _tr, infos = env.step_with_comms(actions, {"agent_0": payload})
     # Teammates of agent_0 are agent_1 (small team_size=2; both on YELLOW).

@@ -321,18 +321,27 @@ class EvalRunner:
         else:
             actions = result
             payloads = {}
-        # Coerce to numpy where reasonable; the env handles type conversion too.
+        # v0.4: actions may be a per-agent mixed dict
+        # ({"move": float32[2], "discrete": int64[n_heads]}) or a flat numpy
+        # array (legacy / scripted paths). Pass dicts through unchanged so the
+        # env decoder can route them; coerce numerics to numpy otherwise.
         coerced: dict[str, Any] = {}
         for name, value in actions.items():
-            if isinstance(value, np.ndarray):
+            if isinstance(value, (dict, np.ndarray)):
                 coerced[name] = value
             else:
                 coerced[name] = np.asarray(value, dtype=np.int64)
         return coerced, payloads or {}
 
-    def _fallback_hold(self, observations: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    def _fallback_hold(self, observations: dict[str, np.ndarray]) -> dict[str, dict[str, np.ndarray]]:
         """All-zeros (== HOLD/NONE) actions if a policy errors out."""
-        return {name: np.zeros(5, dtype=np.int64) for name in observations}
+        return {
+            name: {
+                "move": np.zeros(2, dtype=np.float32),
+                "discrete": np.zeros(4, dtype=np.int64),
+            }
+            for name in observations
+        }
 
     def _compute_safety_cap(self) -> int:
         """Maximum ticks per match used as a runaway-loop safety net."""

@@ -37,7 +37,6 @@ from kivski_sim.replay import ReplayActionFrame, ReplayEventFrame, ReplayWriter
 from kivski_sim.rng import RngHub
 from kivski_sim.state import AgentState, BombState, MatchState, TeamState
 from kivski_sim.types import (
-    MOVE_VECTORS,
     WEAPONS,
     ActionBundle,
     AgentId,
@@ -48,7 +47,6 @@ from kivski_sim.types import (
     MatchOutcome,
     Message,
     MicroAction,
-    MoveIntent,
     Phase,
     RoundOutcome,
     RoundSummary,
@@ -605,26 +603,46 @@ class Engine:
         agent: AgentState,
         action: ActionBundle | None,
     ) -> None:
-        """Update ``agent.pos`` and ``agent.facing`` based on the action."""
+        """Update ``agent.pos`` and ``agent.facing`` based on the action.
+
+        Movement is continuous (v0.4): ``action.move_vec`` is a 2D vector
+        in ``[-1, 1]^2``. The magnitude is the speed factor (0 = HOLD,
+        1 = full speed) and the direction is the heading. To prevent
+        diagonal "free speed" we clamp the magnitude onto the unit circle.
+        """
         if action is None:
             return
         if action.micro == MicroAction.INTERACT:
             # Planting/defusing -- no movement. Facing stays the same.
             return
-        intent = action.move
-        if intent == MoveIntent.HOLD:
-            # Even when holding, an explicit aim_target can rotate the agent
-            # to face that direction.
+        mv = np.asarray(action.move_vec, dtype=np.float32).reshape(-1)
+        if mv.shape[0] < 2:
+            # Degenerate / missing vector -- treat as HOLD.
             self._maybe_face_aim(agent, action)
             return
+        mv = mv[:2]
+        # Clamp NaN/inf to zero so a broken policy can't poison the engine.
+        if not np.all(np.isfinite(mv)):
+            mv = np.zeros(2, dtype=np.float32)
+        # Element-wise clamp to [-1, 1] (defensive: the policy should
+        # already bound the output, but Gaussian sampling can overshoot).
+        mv = np.clip(mv, -1.0, 1.0)
+        mag = float(np.linalg.norm(mv))
+        if mag <= 1e-6:
+            # Effectively HOLD: rotate to face the aim target if any.
+            self._maybe_face_aim(agent, action)
+            return
+        # Clamp to the unit circle so diagonals aren't sqrt(2) faster.
+        if mag > 1.0:
+            mv = mv / mag
+            mag = 1.0
 
-        vec = MOVE_VECTORS[intent]
         speed = _BASE_SPEED_TILES_PER_TICK_AT_10HZ * _SPEED_MULT.get(action.micro, 1.0)
         # Scale tick-rate -- our base is 10 Hz.
         speed *= 10.0 * self._engine_cfg.dt
 
-        delta_x = float(vec[0]) * speed
-        delta_y = float(vec[1]) * speed
+        delta_x = float(mv[0]) * speed
+        delta_y = float(mv[1]) * speed
         new_pos = np.array(
             [float(agent.pos[0]) + delta_x, float(agent.pos[1]) + delta_y],
             dtype=np.float32,
@@ -1221,10 +1239,15 @@ class Engine:
     def _build_action_frame(self, actions: dict[int, ActionBundle]) -> ReplayActionFrame:
         rows: list[dict[str, Any]] = []
         for aid, ab in sorted(actions.items()):
+            mv = np.asarray(ab.move_vec, dtype=np.float32).reshape(-1)
+            if mv.shape[0] < 2:
+                mv = np.zeros(2, dtype=np.float32)
             rows.append(
                 {
                     "agent_id": int(aid),
-                    "move": int(ab.move),
+                    # v0.4: continuous move stored as two floats for replays.
+                    "move_x": float(mv[0]),
+                    "move_y": float(mv[1]),
                     "micro": int(ab.micro),
                     "aim_target": int(ab.aim_target),
                     "comm": int(ab.comm),

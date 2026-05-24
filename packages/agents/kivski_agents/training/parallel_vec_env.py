@@ -52,7 +52,14 @@ from kivski_sim.utils import now_unix
 
 from kivski_agents.metrics import EpisodeStats
 from kivski_agents.training.auto_tune import envs_per_worker_split
-from kivski_agents.training.vec_env import VecEnvStep, VecEnvWrapper
+from kivski_agents.training.vec_env import (
+    VecEnvStep,
+    VecEnvWrapper,
+    _extract_discrete_nvec,
+    _extract_move_dim,
+    _hold_action,
+    _slice_agent_action,
+)
 
 __all__ = [
     "ThreadedVecEnv",
@@ -131,9 +138,12 @@ class ThreadedVecEnv:
         self.agent_names: list[str] = list(self.envs[0].possible_agents)
         self.obs_dim: int = int(self.envs[0].observation_dim)
         self.team_size: int = int(cfg.simulation.team_size)
-        nvec = np.asarray(self.envs[0].action_space(self.agent_names[0]).nvec, dtype=np.int64)
+        nvec = _extract_discrete_nvec(self.envs[0].action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
+        self.continuous_move_dim: int = _extract_move_dim(
+            self.envs[0].action_space(self.agent_names[0])
+        )
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator() for _ in range(self.num_envs)]
         self._current_obs: dict[str, np.ndarray] | None = None
         self._current_infos: list[dict[str, Any]] | None = None
@@ -189,7 +199,7 @@ class ThreadedVecEnv:
 
     def step(
         self,
-        actions: dict[str, np.ndarray],
+        actions: dict[str, Any],
         comm_payloads: dict[str, np.ndarray] | None = None,
     ) -> VecEnvStep:
         if self._current_obs is None:
@@ -206,16 +216,16 @@ class ThreadedVecEnv:
 
         # Pre-slice the per-env action/payload dicts in the main thread so the
         # worker side only sees pure numpy arrays it can hand to the engine.
-        per_env_actions: list[dict[str, np.ndarray]] = []
+        per_env_actions: list[dict[str, Any]] = []
         per_env_payloads: list[dict[str, np.ndarray] | None] = []
         for i in range(self.num_envs):
-            env_actions: dict[str, np.ndarray] = {}
+            env_actions: dict[str, Any] = {}
             env_payloads: dict[str, np.ndarray] | None = {} if comm_payloads is not None else None
             for name in self.agent_names:
                 if name in actions:
-                    env_actions[name] = np.asarray(actions[name][i], dtype=np.int64)
+                    env_actions[name] = _slice_agent_action(actions[name], i, self.n_heads)
                 else:
-                    env_actions[name] = np.zeros(self.n_heads, dtype=np.int64)
+                    env_actions[name] = _hold_action(self.n_heads)
                 if comm_payloads is not None and name in comm_payloads:
                     env_payloads[name] = np.asarray(  # type: ignore[index]
                         comm_payloads[name][i], dtype=np.float32
@@ -619,9 +629,12 @@ class SubprocVecEnv:
         self.agent_names: list[str] = list(self._anchor_env.possible_agents)
         self.obs_dim: int = int(self._anchor_env.observation_dim)
         self.team_size: int = int(cfg.simulation.team_size)
-        nvec = np.asarray(self._anchor_env.action_space(self.agent_names[0]).nvec, dtype=np.int64)
+        nvec = _extract_discrete_nvec(self._anchor_env.action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
+        self.continuous_move_dim: int = _extract_move_dim(
+            self._anchor_env.action_space(self.agent_names[0])
+        )
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator() for _ in range(self.num_envs)]
 
         self._current_obs: dict[str, np.ndarray] | None = None
@@ -720,7 +733,7 @@ class SubprocVecEnv:
 
     def step(
         self,
-        actions: dict[str, np.ndarray],
+        actions: dict[str, Any],
         comm_payloads: dict[str, np.ndarray] | None = None,
     ) -> VecEnvStep:
         if self._current_obs is None:
@@ -736,19 +749,19 @@ class SubprocVecEnv:
 
         # Pre-slice per-env actions/payloads in the parent so the workers
         # don't have to deal with the full batched dict over the wire.
-        per_worker_payloads: list[list[tuple[dict[str, np.ndarray], dict[str, np.ndarray] | None]]] = [
+        per_worker_payloads: list[list[tuple[dict[str, Any], dict[str, np.ndarray] | None]]] = [
             [] for _ in range(self.num_workers)
         ]
         per_worker_env_indices: list[list[int]] = [[] for _ in range(self.num_workers)]
         for env_i in range(self.num_envs):
             w_idx, _local = self._env_to_worker[env_i]
-            env_actions: dict[str, np.ndarray] = {}
+            env_actions: dict[str, Any] = {}
             env_payloads: dict[str, np.ndarray] | None = {} if comm_payloads is not None else None
             for name in self.agent_names:
                 if name in actions:
-                    env_actions[name] = np.asarray(actions[name][env_i], dtype=np.int64)
+                    env_actions[name] = _slice_agent_action(actions[name], env_i, self.n_heads)
                 else:
-                    env_actions[name] = np.zeros(self.n_heads, dtype=np.int64)
+                    env_actions[name] = _hold_action(self.n_heads)
                 if comm_payloads is not None and name in comm_payloads:
                     env_payloads[name] = np.asarray(  # type: ignore[index]
                         comm_payloads[name][env_i], dtype=np.float32

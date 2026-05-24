@@ -141,10 +141,16 @@ class VecEnvWrapper:
         self.agent_names: list[str] = list(self.envs[0].possible_agents)
         self.obs_dim: int = int(self.envs[0].observation_dim)
         self.team_size: int = int(cfg.simulation.team_size)
-        # Read action heads from the env's space so changes in the env stay in sync.
-        nvec = np.asarray(self.envs[0].action_space(self.agent_names[0]).nvec, dtype=np.int64)
+        # Read action heads from the env's space so changes in the env stay
+        # in sync. v0.4: ``action_space`` is a ``Dict`` of move (Box) +
+        # discrete (MultiDiscrete); we report only the *discrete* head count
+        # via ``n_heads`` so existing consumers stay happy.
+        nvec = _extract_discrete_nvec(self.envs[0].action_space(self.agent_names[0]))
         self.n_heads: int = int(nvec.shape[0])
         self.action_dims: np.ndarray = nvec
+        self.continuous_move_dim: int = _extract_move_dim(
+            self.envs[0].action_space(self.agent_names[0])
+        )
         # Per-env accumulators for episode_stats.
         self._acc: list[_EpisodeAccumulator] = [_EpisodeAccumulator(episode=0) for _ in range(self.num_envs)]
         # Initial observation buffer for the very first reset.
@@ -193,13 +199,15 @@ class VecEnvWrapper:
 
     def step(
         self,
-        actions: dict[str, np.ndarray],
+        actions: dict[str, Any],
         comm_payloads: dict[str, np.ndarray] | None = None,
     ) -> VecEnvStep:
         """Advance every env by one tick.
 
         Args:
-            actions: ``{agent_name: int64[num_envs, n_heads]}``.
+            actions: Either ``{agent_name: int64[num_envs, n_heads]}`` (legacy
+                v0.3 layout) or ``{agent_name: {"move": float32[num_envs, D],
+                "discrete": int64[num_envs, n_heads]}}`` (v0.4 mixed format).
             comm_payloads: Optional ``{agent_name: float32[num_envs, value_dim]}``.
 
         Returns:
@@ -225,13 +233,13 @@ class VecEnvWrapper:
 
         for i, env in enumerate(self.envs):
             # Pull this env's slice from the batched dicts.
-            env_actions: dict[str, np.ndarray] = {}
+            env_actions: dict[str, Any] = {}
             env_payloads: dict[str, np.ndarray] | None = {} if comm_payloads is not None else None
             for name in self.agent_names:
                 if name in actions:
-                    env_actions[name] = np.asarray(actions[name][i], dtype=np.int64)
+                    env_actions[name] = _slice_agent_action(actions[name], i, self.n_heads)
                 else:
-                    env_actions[name] = np.zeros(self.n_heads, dtype=np.int64)
+                    env_actions[name] = _hold_action(self.n_heads)
                 if comm_payloads is not None and name in comm_payloads:
                     env_payloads[name] = np.asarray(  # type: ignore[index]
                         comm_payloads[name][i], dtype=np.float32
@@ -425,3 +433,77 @@ class VecEnvWrapper:
             total_rewards_blue=float(acc.total_rewards_blue),
             timestamp=float(now_unix()),
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared with the parallel backends (one tick / one agent slice)
+# ---------------------------------------------------------------------------
+
+
+def _slice_agent_action(action: Any, env_idx: int, n_heads: int) -> Any:
+    """Return the per-env, per-agent slice of a batched action.
+
+    Accepts:
+        * dict ``{"move": [N, D], "discrete": [N, n_heads]}`` -> dict per env.
+        * dict ``{"move": [D], "discrete": [n_heads]}`` -> returned as-is.
+        * ``np.ndarray[N, n_heads]`` -> per-env ``int64[n_heads]``.
+        * ``np.ndarray[N, 2 + n_heads]`` (legacy flat) -> ``int64[...]``.
+        * Anything 1-D -> coerced to ``int64[n_heads]`` padded with zeros.
+    """
+    if isinstance(action, dict):
+        mv_raw = action.get("move")
+        disc_raw = action.get("discrete")
+        out: dict[str, np.ndarray] = {}
+        if mv_raw is not None:
+            mv = np.asarray(mv_raw, dtype=np.float32)
+            if mv.ndim == 2:
+                out["move"] = mv[env_idx]
+            else:
+                out["move"] = mv
+        if disc_raw is not None:
+            d = np.asarray(disc_raw, dtype=np.int64)
+            if d.ndim == 2:
+                out["discrete"] = d[env_idx]
+            else:
+                out["discrete"] = d
+        return out
+    arr = np.asarray(action)
+    if arr.ndim == 2:
+        arr = arr[env_idx]
+    if np.issubdtype(arr.dtype, np.floating):
+        # Could be the flat legacy ``[mx, my, micro, comm, buy, aim]`` form.
+        return arr
+    return arr.astype(np.int64, copy=False)
+
+
+def _hold_action(n_heads: int) -> dict[str, np.ndarray]:
+    """Return the canonical HOLD action: zero move + zero discrete heads."""
+    return {
+        "move": np.zeros(2, dtype=np.float32),
+        "discrete": np.zeros(n_heads, dtype=np.int64),
+    }
+
+
+def _extract_discrete_nvec(action_space: Any) -> np.ndarray:
+    """Return the discrete nvec from a v0.4 Dict space (or legacy MultiDiscrete)."""
+    from gymnasium import spaces
+
+    if isinstance(action_space, spaces.Dict):
+        discrete = action_space.spaces.get("discrete")
+        if discrete is None:
+            raise ValueError("Action space Dict is missing the 'discrete' key")
+        return np.asarray(discrete.nvec, dtype=np.int64)
+    return np.asarray(action_space.nvec, dtype=np.int64)
+
+
+def _extract_move_dim(action_space: Any) -> int:
+    """Return the continuous-move dim from a v0.4 Dict space (default 2)."""
+    from gymnasium import spaces
+
+    if isinstance(action_space, spaces.Dict):
+        move = action_space.spaces.get("move")
+        if move is None:
+            return 2
+        shape = tuple(move.shape or (2,))
+        return int(shape[0]) if shape else 2
+    return 2

@@ -45,7 +45,6 @@ from kivski_sim.types import (
     CommAction,
     MatchOutcome,
     MicroAction,
-    MoveIntent,
     Phase,
     Side,
     Team,
@@ -59,8 +58,9 @@ __all__ = ["KivskiParallelEnv", "agent_name", "agent_index"]
 # Number of distinct weapon classes (for one-hot encoding in the obs vector).
 _NUM_WEAPONS: int = len(WeaponClass)
 
-# Stable enum sizes used for action / sound encoding.
-_NUM_MOVE_INTENTS: int = len(MoveIntent)  # 9
+# v0.4: continuous move replaces the 9-way ``MoveIntent`` enum. The 4 remaining
+# discrete heads share the same semantics as before.
+_CONTINUOUS_MOVE_DIM: int = 2
 _NUM_MICRO_ACTIONS: int = len(MicroAction)  # 6
 _NUM_COMM_ACTIONS: int = len(CommAction)  # 9
 _NUM_BUY_OPTIONS: int = len(BuyChoice)  # 8
@@ -277,17 +277,28 @@ class KivskiParallelEnv(ParallelEnv):
         # agents (excludes self). Total = 2 * team_size (other agents) + 1.
         aim_targets = 2 * self._team_size  # excludes self
         self._aim_target_dim: int = aim_targets + 1
-        self._action_space: spaces.MultiDiscrete = spaces.MultiDiscrete(
-            np.array(
-                [
-                    _NUM_MOVE_INTENTS,
-                    _NUM_MICRO_ACTIONS,
-                    _NUM_COMM_ACTIONS,
-                    _NUM_BUY_OPTIONS,
-                    self._aim_target_dim,
-                ],
-                dtype=np.int64,
-            )
+        # v0.4 mixed action space:
+        #   - ``move``     -> Box(-1, 1, shape=(2,)) continuous heading + speed
+        #   - ``discrete`` -> MultiDiscrete([micro, comm, buy, aim_target])
+        self._discrete_action_dims: np.ndarray = np.array(
+            [
+                _NUM_MICRO_ACTIONS,
+                _NUM_COMM_ACTIONS,
+                _NUM_BUY_OPTIONS,
+                self._aim_target_dim,
+            ],
+            dtype=np.int64,
+        )
+        self._action_space: spaces.Dict = spaces.Dict(
+            {
+                "move": spaces.Box(
+                    low=-1.0,
+                    high=1.0,
+                    shape=(_CONTINUOUS_MOVE_DIM,),
+                    dtype=np.float32,
+                ),
+                "discrete": spaces.MultiDiscrete(self._discrete_action_dims),
+            }
         )
 
         # Per-agent partial-observability memory.
@@ -575,10 +586,15 @@ class KivskiParallelEnv(ParallelEnv):
 
     def _decode_actions(
         self,
-        actions: dict[str, int | np.ndarray | list[int]],
+        actions: dict[str, Any],
         comm_payloads: dict[str, np.ndarray] | None,
     ) -> dict[int, ActionBundle]:
-        """Convert PettingZoo actions into an engine ``dict[int, ActionBundle]``."""
+        """Convert PettingZoo actions into an engine ``dict[int, ActionBundle]``.
+
+        Accepts the new dict format ``{"move": [mx, my], "discrete": [micro, comm,
+        buy, aim]}`` as well as a v0.3-style flat ``[move_x, move_y, micro, comm,
+        buy, aim]`` numpy array / list for ad-hoc test usage.
+        """
         out: dict[int, ActionBundle] = {}
         team_size = self._team_size
         for name in self._possible_agents:
@@ -588,8 +604,7 @@ class KivskiParallelEnv(ParallelEnv):
                 # Missing action -- the engine treats this as HOLD.
                 out[aid] = ActionBundle()
                 continue
-            move_i, micro_i, comm_i, buy_i, aim_i = _coerce_action_array(raw)
-            move = MoveIntent(int(np.clip(move_i, 0, _NUM_MOVE_INTENTS - 1)))
+            mv, micro_i, comm_i, buy_i, aim_i = _coerce_mixed_action(raw)
             micro = MicroAction(int(np.clip(micro_i, 0, _NUM_MICRO_ACTIONS - 1)))
             comm = CommAction(int(np.clip(comm_i, 0, _NUM_COMM_ACTIONS - 1)))
             buy = BuyChoice(int(np.clip(buy_i, 0, _NUM_BUY_OPTIONS - 1)))
@@ -600,7 +615,7 @@ class KivskiParallelEnv(ParallelEnv):
                 payload = np.asarray(comm_payloads[name], dtype=np.float32)
 
             out[aid] = ActionBundle(
-                move=move,
+                move_vec=mv,
                 micro=micro,
                 aim_target=aim_target,
                 comm=comm,
@@ -1156,30 +1171,116 @@ class KivskiParallelEnv(ParallelEnv):
 # ---------------------------------------------------------------------------
 
 
-def _coerce_action_array(raw: int | np.ndarray | list[int]) -> tuple[int, int, int, int, int]:
-    """Accept several common encodings and return (move, micro, comm, buy, aim)."""
-    if isinstance(raw, (int, np.integer)):
-        # Single int -- only useful for tests that want to set move only.
-        return (int(raw), 0, 0, 0, 0)
-    if isinstance(raw, np.ndarray):
-        arr = raw.astype(np.int64, copy=False).ravel()
-        if arr.shape[0] < 5:
-            padded = np.zeros(5, dtype=np.int64)
-            padded[: arr.shape[0]] = arr
-            arr = padded
-        return (int(arr[0]), int(arr[1]), int(arr[2]), int(arr[3]), int(arr[4]))
-    if isinstance(raw, (list, tuple)):
-        seq = list(raw)
-        while len(seq) < 5:
-            seq.append(0)
-        return (int(seq[0]), int(seq[1]), int(seq[2]), int(seq[3]), int(seq[4]))
-    # Last-ditch: dict with named keys.
+def _zero_move() -> np.ndarray:
+    return np.zeros(2, dtype=np.float32)
+
+
+def _coerce_mixed_action(
+    raw: Any,
+) -> tuple[np.ndarray, int, int, int, int]:
+    """Coerce a wide range of input formats into a mixed action tuple.
+
+    Returns ``(move_vec[2 float32], micro:int, comm:int, buy:int, aim:int)``.
+    Accepted encodings:
+
+    * Dict with keys ``"move"`` and ``"discrete"`` (the v0.4 canonical format).
+    * Dict with explicit named keys ``move``/``move_vec``/``move_x``/``move_y``,
+      ``micro``, ``comm``, ``buy``, ``aim_target``.
+    * Flat numpy array / list / tuple of length >= 6 laid out as
+      ``[move_x, move_y, micro, comm, buy, aim]`` (legacy fixture friendly).
+    * Length-5 array ``[move_index, micro, comm, buy, aim]`` is interpreted as
+      v0.3-style discrete movement via the :data:`MOVE_VECTORS` table.
+    * A single int treated as a legacy :class:`MoveIntent` (test convenience).
+    """
     if isinstance(raw, dict):
-        return (
-            int(raw.get("move", 0)),
-            int(raw.get("micro", 0)),
-            int(raw.get("comm", 0)),
-            int(raw.get("buy", 0)),
-            int(raw.get("aim_target", 0)),
-        )
+        # Canonical v0.4 dict.
+        if "move" in raw and "discrete" in raw:
+            mv = np.asarray(raw["move"], dtype=np.float32).reshape(-1)
+            mv = _zero_move() if mv.shape[0] < 2 else mv[:2].copy()
+            disc = np.asarray(raw["discrete"], dtype=np.int64).reshape(-1)
+            if disc.shape[0] < 4:
+                padded = np.zeros(4, dtype=np.int64)
+                padded[: disc.shape[0]] = disc
+                disc = padded
+            return mv, int(disc[0]), int(disc[1]), int(disc[2]), int(disc[3])
+        # Field-named dict.
+        if "move_vec" in raw or "move_x" in raw or "move_y" in raw:
+            if "move_vec" in raw:
+                mv = np.asarray(raw["move_vec"], dtype=np.float32).reshape(-1)
+                mv = _zero_move() if mv.shape[0] < 2 else mv[:2].copy()
+            else:
+                mv = np.array(
+                    [float(raw.get("move_x", 0.0)), float(raw.get("move_y", 0.0))],
+                    dtype=np.float32,
+                )
+            return (
+                mv,
+                int(raw.get("micro", 0)),
+                int(raw.get("comm", 0)),
+                int(raw.get("buy", 0)),
+                int(raw.get("aim_target", 0)),
+            )
+        if "move" in raw:
+            from kivski_sim.types import MOVE_VECTORS, MoveIntent
+
+            try:
+                intent = MoveIntent(int(raw["move"]))
+            except (ValueError, TypeError):
+                intent = MoveIntent.HOLD
+            dx, dy = MOVE_VECTORS[intent]
+            return (
+                np.array([dx, dy], dtype=np.float32),
+                int(raw.get("micro", 0)),
+                int(raw.get("comm", 0)),
+                int(raw.get("buy", 0)),
+                int(raw.get("aim_target", 0)),
+            )
+        # Empty dict -> HOLD.
+        return _zero_move(), 0, 0, 0, 0
+    if isinstance(raw, (int, np.integer)):
+        from kivski_sim.types import MOVE_VECTORS, MoveIntent
+
+        try:
+            intent = MoveIntent(int(raw))
+        except (ValueError, TypeError):
+            intent = MoveIntent.HOLD
+        dx, dy = MOVE_VECTORS[intent]
+        return np.array([dx, dy], dtype=np.float32), 0, 0, 0, 0
+    if isinstance(raw, (np.ndarray, list, tuple)):
+        arr = np.asarray(raw).reshape(-1)
+        if arr.shape[0] >= 6:
+            mv = arr[:2].astype(np.float32, copy=False)
+            return (
+                np.array([float(mv[0]), float(mv[1])], dtype=np.float32),
+                int(arr[2]),
+                int(arr[3]),
+                int(arr[4]),
+                int(arr[5]),
+            )
+        # Length-5 legacy ([move_idx, micro, comm, buy, aim]).
+        if arr.shape[0] == 5:
+            from kivski_sim.types import MOVE_VECTORS, MoveIntent
+
+            try:
+                intent = MoveIntent(int(arr[0]))
+            except (ValueError, TypeError):
+                intent = MoveIntent.HOLD
+            dx, dy = MOVE_VECTORS[intent]
+            return (
+                np.array([dx, dy], dtype=np.float32),
+                int(arr[1]),
+                int(arr[2]),
+                int(arr[3]),
+                int(arr[4]),
+            )
+        if arr.shape[0] == 2:
+            mv = arr.astype(np.float32, copy=False)
+            return np.array([float(mv[0]), float(mv[1])], dtype=np.float32), 0, 0, 0, 0
+        # Pad-short -> HOLD.
+        return _zero_move(), 0, 0, 0, 0
     raise TypeError(f"Unsupported action type: {type(raw)!r}")
+
+
+# Legacy alias retained for any third-party caller that imported it; the
+# coercion is now the mixed-action variant above.
+_coerce_action_array = _coerce_mixed_action

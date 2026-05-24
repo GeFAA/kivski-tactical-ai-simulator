@@ -37,15 +37,19 @@ __all__ = ["RolloutBatch", "RolloutBuffer"]
 
 @dataclass
 class RolloutBatch:
-    """One PPO minibatch.
+    """One PPO minibatch (v0.4 mixed action space).
 
     All tensors share a leading batch dimension ``[BS]`` where
     ``BS = minibatch_size`` (or less for the trailing partial batch).
+
+    The ``actions`` attribute is a dict ``{"move": [BS, move_dim] float,
+    "discrete": [BS, n_heads] int64}`` -- ready to hand to
+    :meth:`KivskiActorCritic.evaluate`.
     """
 
     observations: Tensor  # [BS, obs_dim]
     joint_observations: Tensor  # [BS, joint_obs_dim]
-    actions: Tensor  # [BS, n_heads]
+    actions: dict[str, Tensor]  # {"move": [BS, D], "discrete": [BS, n_heads]}
     old_log_probs: Tensor  # [BS]
     old_values: Tensor  # [BS]
     returns: Tensor  # [BS]
@@ -95,6 +99,7 @@ class RolloutBuffer:
         device: torch.device | str = "cpu",
         n_teammates: int | None = None,
         gru_layers: int = 1,
+        continuous_move_dim: int = 2,
     ) -> None:
         if T <= 0 or N_envs <= 0 or n_agents <= 0:
             raise ValueError("T, N_envs, n_agents must be positive")
@@ -104,6 +109,8 @@ class RolloutBuffer:
             raise ValueError("hidden_size, comm_value_dim must be positive")
         if gru_layers <= 0:
             raise ValueError("gru_layers must be positive")
+        if continuous_move_dim <= 0:
+            raise ValueError("continuous_move_dim must be positive")
 
         self.T: int = int(T)
         self.N_envs: int = int(N_envs)
@@ -111,6 +118,7 @@ class RolloutBuffer:
         self.obs_dim: int = int(obs_dim)
         self.joint_obs_dim: int = int(joint_obs_dim)
         self.n_heads: int = int(n_heads)
+        self.continuous_move_dim: int = int(continuous_move_dim)
         self.hidden_size: int = int(hidden_size)
         self.comm_value_dim: int = int(comm_value_dim)
         self.gru_layers: int = int(gru_layers)
@@ -121,7 +129,11 @@ class RolloutBuffer:
 
         # Per-agent tensors -- [T, N_envs, n_agents, ...]
         self.observations = torch.zeros(self.T, self.N_envs, self.n_agents, self.obs_dim, device=d)
-        self.actions = torch.zeros(
+        # v0.4: split action storage -- continuous move + discrete heads.
+        self.actions_move = torch.zeros(
+            self.T, self.N_envs, self.n_agents, self.continuous_move_dim, device=d
+        )
+        self.actions_discrete = torch.zeros(
             self.T, self.N_envs, self.n_agents, self.n_heads, dtype=torch.int64, device=d
         )
         self.log_probs = torch.zeros(self.T, self.N_envs, self.n_agents, device=d)
@@ -157,12 +169,22 @@ class RolloutBuffer:
     def full(self) -> bool:
         return self._step >= self.T
 
+    @property
+    def actions(self) -> Tensor:
+        """Legacy alias: the discrete-action tensor.
+
+        Older test code references ``buffer.actions`` directly to inspect
+        sampled discrete actions. The continuous move tensor is exposed
+        separately as :attr:`actions_move` / :attr:`actions_discrete`.
+        """
+        return self.actions_discrete
+
     def add(
         self,
         step: int,
         observations: Tensor,
         joint_obs: Tensor,
-        actions: Tensor,
+        actions: Tensor | dict[str, Tensor],
         log_probs: Tensor,
         value: Tensor,
         rewards: Tensor,
@@ -173,8 +195,15 @@ class RolloutBuffer:
     ) -> None:
         """Insert one timestep of transitions at index ``step``.
 
-        Tensors are converted to the buffer's device/dtype as needed. Shapes
-        are validated to catch the most common batching mistakes early.
+        ``actions`` may be either:
+          * a dict ``{"move": [N, A, D] float, "discrete": [N, A, n_heads]
+            int64}`` (canonical v0.4 format), or
+          * a single int64 tensor ``[N, A, n_heads]`` (legacy: the move
+            tensor is zeroed, useful for tests that only care about discrete
+            shapes).
+
+        Tensors are converted to the buffer's device/dtype as needed.
+        Shapes are validated to catch the most common batching mistakes early.
         """
         if step < 0 or step >= self.T:
             raise IndexError(f"step out of range [0, {self.T}): got {step}")
@@ -193,7 +222,23 @@ class RolloutBuffer:
         self.joint_observations[step] = _check(
             joint_obs.to(torch.float32), "joint_obs", (ne, self.joint_obs_dim)
         )
-        self.actions[step] = _check(actions.to(torch.int64), "actions", (ne, na, self.n_heads))
+        if isinstance(actions, dict):
+            move = actions["move"].to(torch.float32)
+            disc = actions["discrete"].to(torch.int64)
+            self.actions_move[step] = _check(
+                move, "actions['move']", (ne, na, self.continuous_move_dim)
+            )
+            self.actions_discrete[step] = _check(
+                disc, "actions['discrete']", (ne, na, self.n_heads)
+            )
+        else:
+            self.actions_discrete[step] = _check(
+                actions.to(torch.int64), "actions", (ne, na, self.n_heads)
+            )
+            # Move defaults to zeros (HOLD) when only discrete actions are stored.
+            self.actions_move[step] = torch.zeros(
+                ne, na, self.continuous_move_dim, device=self.device
+            )
         self.log_probs[step] = _check(log_probs.to(torch.float32), "log_probs", (ne, na))
         # Value may arrive as [N_envs] or [N_envs, 1]; squeeze.
         v = value.to(self.device, torch.float32).view(ne)
@@ -315,7 +360,8 @@ class RolloutBuffer:
 
         # Flatten per-agent tensors.
         obs_flat = self.observations[:t_max].reshape(flat_count, self.obs_dim)
-        actions_flat = self.actions[:t_max].reshape(flat_count, self.n_heads)
+        actions_move_flat = self.actions_move[:t_max].reshape(flat_count, self.continuous_move_dim)
+        actions_disc_flat = self.actions_discrete[:t_max].reshape(flat_count, self.n_heads)
         log_probs_flat = self.log_probs[:t_max].reshape(flat_count)
         rewards_flat = self.rewards[:t_max].reshape(flat_count)
         masks_flat = self.masks[:t_max].reshape(flat_count)
@@ -350,7 +396,10 @@ class RolloutBuffer:
             yield RolloutBatch(
                 observations=obs_flat.index_select(0, idx),
                 joint_observations=joint_obs_per_agent.index_select(0, idx),
-                actions=actions_flat.index_select(0, idx),
+                actions={
+                    "move": actions_move_flat.index_select(0, idx),
+                    "discrete": actions_disc_flat.index_select(0, idx),
+                },
                 old_log_probs=log_probs_flat.index_select(0, idx),
                 old_values=values_per_agent.index_select(0, idx),
                 returns=returns_per_agent.index_select(0, idx),

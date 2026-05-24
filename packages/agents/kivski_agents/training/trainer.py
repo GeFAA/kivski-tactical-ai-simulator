@@ -38,7 +38,7 @@ from kivski_sim.config import KivskiConfig
 from kivski_agents.buffer import RolloutBuffer
 from kivski_agents.eval.runner import EvalResult, EvalRunner
 from kivski_agents.eval.scenarios import ALL_SCENARIOS, ScenarioSpec
-from kivski_agents.factory import build_model, build_trainer, default_action_dims, infer_joint_obs_dim
+from kivski_agents.factory import build_model, build_trainer, default_action_spec, infer_joint_obs_dim
 from kivski_agents.mappo import MAPPOLoss, MAPPOTrainer
 from kivski_agents.metrics import (
     CommUsageStats,
@@ -157,7 +157,7 @@ class Trainer:
         # 3) Model + trainer.
         team_size = int(self.active_cfg.simulation.team_size)
         obs_dim = int(self.vec_env.obs_dim)
-        action_dims = default_action_dims(team_size)
+        action_dims = default_action_spec(team_size)
         joint_obs_dim = infer_joint_obs_dim(obs_dim, team_size)
         self.model = build_model(
             cfg=self.active_cfg,
@@ -188,6 +188,7 @@ class Trainer:
             device=self.device,
             n_teammates=team_size,
             gru_layers=int(self.model.gru_layers),
+            continuous_move_dim=int(self.model.continuous_move_dim),
         )
 
         # 6) League.
@@ -848,7 +849,7 @@ class Trainer:
         )
         team_size = new_team_size
         obs_dim = int(self.vec_env.obs_dim)
-        action_dims = default_action_dims(team_size)
+        action_dims = default_action_spec(team_size)
         joint_obs_dim = infer_joint_obs_dim(obs_dim, team_size)
         self.model = build_model(
             cfg=self.active_cfg,
@@ -871,6 +872,7 @@ class Trainer:
             device=self.device,
             n_teammates=team_size,
             gru_layers=int(self.model.gru_layers),
+            continuous_move_dim=int(self.model.continuous_move_dim),
         )
         # Re-anchor the league on the new env / model.
         self.league.env = self.vec_env.envs[0]

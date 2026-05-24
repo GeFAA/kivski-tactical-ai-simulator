@@ -12,7 +12,7 @@ when available while tests stay on CPU.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import torch
 from kivski_sim.config import KivskiConfig, MLConfig
@@ -24,6 +24,8 @@ __all__ = [
     "build_model",
     "build_trainer",
     "default_action_dims",
+    "default_action_spec",
+    "discrete_action_dims",
     "infer_joint_obs_dim",
 ]
 
@@ -33,15 +35,40 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def default_action_dims(team_size: int) -> list[int]:
-    """Return the standard MAPPO MultiDiscrete action dims for a given team size.
+def discrete_action_dims(team_size: int) -> list[int]:
+    """Return the discrete-head action dims (micro, comm, buy, aim_target).
 
     Mirrors :class:`kivski_sim.env.KivskiParallelEnv` exactly:
-    ``[move=9, micro=6, comm=9, buy=8, aim_target=2*team_size+1]``.
+    ``[micro=6, comm=9, buy=8, aim_target=2*team_size+1]``.
     """
     if team_size <= 0:
         raise ValueError(f"team_size must be positive, got {team_size}")
-    return [9, 6, 9, 8, 2 * int(team_size) + 1]
+    return [6, 9, 8, 2 * int(team_size) + 1]
+
+
+def default_action_spec(team_size: int) -> dict[str, object]:
+    """Return the mixed action-space spec used by v0.4 MAPPO.
+
+    The dict contains:
+        * ``"continuous_move_dim"``: 2 (the Box(-1, 1)^2 move vector).
+        * ``"discrete_dims"``: list of categorical head sizes (micro, comm,
+          buy, aim_target).
+    """
+    return {
+        "continuous_move_dim": 2,
+        "discrete_dims": discrete_action_dims(int(team_size)),
+    }
+
+
+def default_action_dims(team_size: int) -> list[int]:
+    """Return the discrete-head dims for a given team size.
+
+    Kept for backwards compatibility with older call sites that treated
+    ``action_dims`` as a flat list of categorical head sizes -- these now
+    refer only to the *discrete* heads. For the new continuous move head
+    use :func:`default_action_spec` instead.
+    """
+    return discrete_action_dims(int(team_size))
 
 
 def infer_joint_obs_dim(obs_dim: int, team_size: int, global_features: int = 0) -> int:
@@ -60,7 +87,7 @@ def build_model(
     cfg: KivskiConfig,
     obs_dim: int,
     joint_obs_dim: int,
-    action_dims: Sequence[int],
+    action_dims: Sequence[int] | Mapping[str, object],
     device: torch.device | str = "cpu",
 ) -> KivskiActorCritic:
     """Construct :class:`KivskiActorCritic` from :class:`KivskiConfig`.
@@ -71,8 +98,11 @@ def build_model(
             :func:`kivski_sim.obs_decoder.get_observation_dim`).
         joint_obs_dim: Centralised critic input width
             (see :func:`infer_joint_obs_dim`).
-        action_dims: Per-head category counts; usually
-            :func:`default_action_dims` of the team size.
+        action_dims: Either (a) a flat sequence of discrete head dims
+            (legacy: kept for backwards compat -- the move head defaults to
+            2-D continuous), or (b) a mapping with keys ``continuous_move_dim``
+            and ``discrete_dims`` (the v0.4 canonical form returned by
+            :func:`default_action_spec`).
         device: ``"cpu"`` / ``"cuda"`` / etc.
     """
     ml: MLConfig = cfg.ml
@@ -87,10 +117,13 @@ def build_model(
     sig_dim = max(heads, ((half + heads - 1) // heads) * heads)
     val_dim = sig_dim  # symmetric default; trainer can override later
 
+    continuous_move_dim, discrete_dims = _split_action_dims(action_dims)
+
     model = KivskiActorCritic(
         obs_dim=int(obs_dim),
         joint_obs_dim=int(joint_obs_dim),
-        action_dims=list(action_dims),
+        action_dims=list(discrete_dims),
+        continuous_move_dim=int(continuous_move_dim),
         hidden_size=int(ml.hidden_size),
         comm_signature_dim=int(sig_dim),
         comm_value_dim=int(val_dim),
@@ -101,6 +134,31 @@ def build_model(
     )
     model.to(torch.device(device))
     return model
+
+
+def _split_action_dims(
+    action_dims: Sequence[int] | Mapping[str, object],
+) -> tuple[int, list[int]]:
+    """Normalise the various accepted ``action_dims`` formats.
+
+    Returns ``(continuous_move_dim, discrete_dims)``. When the input is a
+    flat sequence we assume it represents the discrete heads (v0.4 default).
+    A legacy 5-element list ``[9, 6, 9, 8, aim]`` is detected and folded:
+    the leading ``9`` (old MoveIntent) is dropped and the remaining 4 are
+    used as the discrete heads.
+    """
+    if isinstance(action_dims, Mapping):
+        cont = int(action_dims.get("continuous_move_dim", 2))
+        disc = [int(x) for x in action_dims["discrete_dims"]]
+        return cont, disc
+    seq = [int(x) for x in action_dims]
+    if not seq:
+        raise ValueError("action_dims must not be empty")
+    # Legacy v0.3 flat list: [move=9, micro, comm, buy, aim]. Detect it by
+    # length 5 and a leading 9 (the legacy MoveIntent cardinality).
+    if len(seq) == 5 and seq[0] == 9:
+        return 2, seq[1:]
+    return 2, seq
 
 
 def build_trainer(

@@ -14,7 +14,6 @@ from kivski_agents.baselines import (
 from kivski_sim.config import KivskiConfig
 from kivski_sim.env import KivskiParallelEnv
 from kivski_sim.map_loader import load_map
-from kivski_sim.types import MoveIntent
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -56,7 +55,7 @@ def env(small_cfg: KivskiConfig) -> KivskiParallelEnv:
 
 
 def test_random_baseline_actions_in_space(env: KivskiParallelEnv) -> None:
-    """Random baseline's actions must always satisfy the action-space dims."""
+    """Random baseline's actions must satisfy the v0.4 mixed action space."""
     space = env.action_space("agent_0")
     rb = RandomBaseline(space, seed=0)
     obs, _ = env.reset(seed=0)
@@ -64,14 +63,26 @@ def test_random_baseline_actions_in_space(env: KivskiParallelEnv) -> None:
     actions, payloads = rb.act(obs)
     assert payloads == {}
     assert set(actions.keys()) == set(obs.keys())
+    nvec = np.asarray(space.spaces["discrete"].nvec)
     for name, act in actions.items():
-        assert isinstance(act, np.ndarray)
-        assert act.dtype == np.int64
-        assert act.shape == (space.nvec.shape[0],)
-        for i, dim in enumerate(space.nvec):
-            assert 0 <= int(act[i]) < int(dim), (
-                f"Agent {name} action[{i}]={int(act[i])} out of range [0,{int(dim)})"
+        assert isinstance(act, dict)
+        assert "move" in act and "discrete" in act
+        mv = np.asarray(act["move"])
+        assert mv.dtype == np.float32
+        assert mv.shape == (2,)
+        assert float(mv.min()) >= -1.0 - 1e-6
+        assert float(mv.max()) <= 1.0 + 1e-6
+        disc = np.asarray(act["discrete"])
+        assert disc.dtype == np.int64
+        assert disc.shape == (nvec.shape[0],)
+        for i, dim in enumerate(nvec):
+            assert 0 <= int(disc[i]) < int(dim), (
+                f"Agent {name} discrete[{i}]={int(disc[i])} out of range [0,{int(dim)})"
             )
+
+
+def _actions_equal(a: dict, b: dict) -> bool:
+    return np.array_equal(a["move"], b["move"]) and np.array_equal(a["discrete"], b["discrete"])
 
 
 def test_random_baseline_reproducible_with_seed(env: KivskiParallelEnv) -> None:
@@ -87,14 +98,14 @@ def test_random_baseline_reproducible_with_seed(env: KivskiParallelEnv) -> None:
     actions_a, _ = a.act(obs)
     actions_b, _ = b.act(obs)
     for name in actions_a:
-        assert np.array_equal(actions_a[name], actions_b[name]), name
+        assert _actions_equal(actions_a[name], actions_b[name]), name
 
     # Different seeds give different streams (statistical check on a small dim).
     c = RandomBaseline(space, seed=999)
     c.reset(list(obs.keys()))
     actions_c, _ = c.act(obs)
     # Probabilistically extremely unlikely to fully match for non-trivial dims.
-    any_diff = any(not np.array_equal(actions_a[name], actions_c[name]) for name in actions_a)
+    any_diff = any(not _actions_equal(actions_a[name], actions_c[name]) for name in actions_a)
     assert any_diff
 
 
@@ -104,17 +115,24 @@ def test_random_baseline_reproducible_with_seed(env: KivskiParallelEnv) -> None:
 
 
 def test_scripted_hold_outputs_valid_actions(env: KivskiParallelEnv) -> None:
-    """ScriptedHoldBaseline outputs must satisfy the action space."""
+    """ScriptedHoldBaseline outputs must satisfy the v0.4 mixed action space."""
     space = env.action_space("agent_0")
     bot = ScriptedHoldBaseline(space, env.map, seed=0)
     obs, _ = env.reset(seed=0)
     bot.reset(list(obs.keys()))
     actions, payloads = bot.act(obs)
     assert payloads == {}
+    nvec = np.asarray(space.spaces["discrete"].nvec)
     for name, act in actions.items():
-        assert act.shape == (space.nvec.shape[0],)
-        for i, dim in enumerate(space.nvec):
-            assert 0 <= int(act[i]) < int(dim), name
+        assert isinstance(act, dict)
+        mv = np.asarray(act["move"])
+        assert mv.shape == (2,)
+        assert float(mv.min()) >= -1.0 - 1e-6
+        assert float(mv.max()) <= 1.0 + 1e-6
+        disc = np.asarray(act["discrete"])
+        assert disc.shape == (nvec.shape[0],)
+        for i, dim in enumerate(nvec):
+            assert 0 <= int(disc[i]) < int(dim), name
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +156,10 @@ def test_scripted_rush_targets_bombsite(env: KivskiParallelEnv) -> None:
         actions, _ = bot.act(obs)
 
     # Once in LIVE, at least one agent should be picking a non-HOLD move
-    # (i.e. heading toward a bombsite). HOLD = 0; SPRINT = MicroAction.SPRINT
-    # we look at the move head only.
-    any_movement = any(int(act[0]) != int(MoveIntent.HOLD) for act in actions.values())
+    # (i.e. heading toward a bombsite). HOLD = zero move_vec.
+    any_movement = any(
+        float(np.linalg.norm(np.asarray(act["move"]))) > 1e-3 for act in actions.values()
+    )
     assert any_movement, "Rush baseline should be moving during LIVE phase"
 
 

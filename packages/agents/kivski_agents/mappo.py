@@ -158,6 +158,8 @@ class MAPPOTrainer:
         for _epoch in range(epochs):
             for batch in buffer.minibatch_iter(minibatch_size, shuffle=True):
                 with amp_ctx:
+                    # batch.actions is the v0.4 mixed dict
+                    # {"move": [BS, D] float, "discrete": [BS, n_heads] int64}.
                     eval_out = self.model.evaluate(
                         obs=batch.observations,
                         hidden_state=batch.hidden_states,
@@ -396,6 +398,7 @@ def _model_init_dict(model: KivskiActorCritic) -> dict[str, Any]:
         "obs_dim": int(model.obs_dim),
         "joint_obs_dim": int(model.joint_obs_dim),
         "action_dims": list(model.action_dims),
+        "continuous_move_dim": int(model.continuous_move_dim),
         "hidden_size": int(model.hidden_size),
         "comm_signature_dim": int(model.comm_signature_dim),
         "comm_value_dim": int(model.comm_value_dim),
@@ -409,15 +412,20 @@ def _model_init_dict(model: KivskiActorCritic) -> dict[str, Any]:
 def _env_shape_from_model(model: KivskiActorCritic) -> dict[str, Any]:
     """Best-effort env shape inferred from a model when no live env is around.
 
-    ``team_size`` is reconstructed from ``action_dims[4] = 2 * team_size + 1``
-    (see :func:`kivski_agents.factory.default_action_dims`). ``n_heads`` is
-    the number of discrete action heads (== ``len(action_dims)``).
-    ``obs_dim`` is read straight from the model.
+    v0.4 discrete action layout: ``[micro=6, comm=9, buy=8,
+    aim_target=2*team_size+1]``. ``team_size`` is reconstructed from the
+    last (aim_target) head. ``n_heads`` is the number of discrete heads
+    (== ``len(action_dims)``). ``obs_dim`` is read straight from the model.
     """
     action_dims = list(model.action_dims) if model.action_dims else []
     n_heads = len(action_dims)
     team_size: int | None = None
-    if n_heads >= 5:
+    if n_heads >= 4:
+        last = int(action_dims[-1])
+        if last >= 3 and (last - 1) % 2 == 0:
+            team_size = (last - 1) // 2
+    elif n_heads >= 5:
+        # Old v0.3 5-head layout (move=9, micro=6, comm=9, buy=8, aim).
         last = int(action_dims[4])
         if last >= 3 and (last - 1) % 2 == 0:
             team_size = (last - 1) // 2

@@ -29,6 +29,7 @@ The conventions used throughout:
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -177,25 +178,38 @@ class RecurrentCore(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+# v0.4 continuous-move bounds: clamp tanh-mean to (-MOVE_MEAN_LIMIT, +LIMIT) and
+# log-std to (-5, 2). The mean limit avoids saturating tanh at ±1 (no gradient).
+_MOVE_MEAN_LIMIT: float = 0.999
+_LOG_STD_MIN: float = -5.0
+_LOG_STD_MAX: float = 2.0
+
+
 class ActorHeads(nn.Module):
-    """Autoregressive multi-head categorical actor.
+    """Mixed continuous + discrete autoregressive actor (v0.4).
 
-    There are five action heads, sampled in a fixed order so each head can
-    condition on the previously sampled (embedded) actions:
+    Action layout:
 
-    1. ``move``      -- 9 categories (compass + hold).
-    2. ``micro``     -- 6 categories (posture / interact).
-    3. ``comm``      -- 9 categories (discrete comm token id).
-    4. ``buy``       -- 8 categories (purchase choice).
-    5. ``aim_target`` -- ``2 * team_size + 1`` categories (0 = none, 1.. =
-       pointer into the other agents).
+    * ``move``       -- continuous 2-D vector in ``[-1, 1]^2`` (diagonal
+      Gaussian, mean produced via ``tanh``, log-std as a learned head).
+    * ``micro``      -- 6 categories (posture / interact).
+    * ``comm``       -- 9 categories (discrete comm token id).
+    * ``buy``        -- 8 categories (purchase choice).
+    * ``aim_target`` -- ``2 * team_size + 1`` categories (0 = none, 1.. =
+      pointer into the other agents).
+
+    The discrete heads stay autoregressive (each head can condition on the
+    embedding of the previously sampled discrete action). The continuous
+    move head is sampled first and its tanh-mean is concatenated into the
+    first discrete head's input so the discrete cascade can react to the
+    chosen heading.
 
     Two modes:
 
-    * :meth:`sample` -- autoregressive sampling for rollouts.
-    * :meth:`evaluate` -- given actions, run all heads in parallel to
-      recover per-head log probabilities, summed entropies, and the joint
-      log-probability (sum across heads).
+    * :meth:`sample` -- one rollout pass: produces a dict of actions, the
+      joint log-probability (continuous + discrete), and a summed entropy.
+    * :meth:`evaluate` -- recompute log-prob + entropy for previously
+      logged actions (used inside the PPO update).
     """
 
     def __init__(
@@ -203,6 +217,7 @@ class ActorHeads(nn.Module):
         hidden_size: int,
         action_dims: Sequence[int],
         embedding_dim: int = 32,
+        continuous_move_dim: int = 2,
     ) -> None:
         super().__init__()
         if hidden_size <= 0:
@@ -214,22 +229,45 @@ class ActorHeads(nn.Module):
             raise ValueError(f"action_dims must all be positive, got {action_dims_list}")
         if embedding_dim <= 0:
             raise ValueError(f"embedding_dim must be positive, got {embedding_dim}")
+        if continuous_move_dim <= 0:
+            raise ValueError(f"continuous_move_dim must be positive, got {continuous_move_dim}")
 
         self.hidden_size: int = int(hidden_size)
         self.action_dims: list[int] = list(action_dims_list)
         self.num_heads: int = len(self.action_dims)
         self.embedding_dim: int = int(embedding_dim)
+        self.continuous_move_dim: int = int(continuous_move_dim)
 
-        # One Linear per head -- input width grows with the number of
-        # previously sampled actions (each embedded into ``embedding_dim``).
+        # ---- Continuous move head (Diagonal Gaussian) ----
+        # Output: 2 * D values laid out as [mean(D) | log_std(D)].
+        self.move_head = nn.Linear(self.hidden_size, 2 * self.continuous_move_dim)
+
+        # ---- Discrete heads ----
+        # The first head conditions on (hidden | move_mean); subsequent
+        # heads also concat embeddings of previously-sampled discrete actions.
         heads: list[nn.Linear] = []
         embeddings: list[nn.Embedding] = []
         for i, n_cat in enumerate(self.action_dims):
-            in_dim = self.hidden_size + i * self.embedding_dim
+            in_dim = self.hidden_size + self.continuous_move_dim + i * self.embedding_dim
             heads.append(nn.Linear(in_dim, int(n_cat)))
             embeddings.append(nn.Embedding(int(n_cat), self.embedding_dim))
         self.heads = nn.ModuleList(heads)
         self.embeddings = nn.ModuleList(embeddings)
+
+    # --------------------------------------------------------------
+    # Internal: split move-head linear output into mean + std
+    # --------------------------------------------------------------
+
+    def _move_params(self, hidden: Tensor) -> tuple[Tensor, Tensor]:
+        """Return ``(mean, std)`` for the diagonal Gaussian move head."""
+        raw = self.move_head(hidden)
+        mean_raw = raw[..., : self.continuous_move_dim]
+        log_std_raw = raw[..., self.continuous_move_dim :]
+        # tanh bounds mean to (-1, 1); the tighter LIMIT keeps gradient alive.
+        mean = torch.tanh(mean_raw) * _MOVE_MEAN_LIMIT
+        log_std = log_std_raw.clamp(_LOG_STD_MIN, _LOG_STD_MAX)
+        std = log_std.exp()
+        return mean, std
 
     # --------------------------------------------------------------
     # Sampling
@@ -239,42 +277,70 @@ class ActorHeads(nn.Module):
         self,
         hidden: Tensor,
         deterministic: bool = False,
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        """Autoregressively sample one action per head.
+    ) -> tuple[dict[str, Tensor], Tensor, Tensor]:
+        """Sample one mixed action per agent.
 
         Args:
             hidden: ``[B, hidden_size]`` actor hidden state.
-            deterministic: If True, take the argmax per head instead of
-                sampling. Useful for eval / deployment.
+            deterministic: If True, return the mean of the continuous head
+                and argmax for each discrete head. Otherwise sample.
 
         Returns:
             ``(actions, log_probs, entropy)``:
-                * ``actions``: ``[B, num_heads]`` int64 sampled categories.
-                * ``log_probs``: ``[B]`` -- summed log-prob across heads.
-                * ``entropy``: ``[B]`` -- summed per-head categorical
-                  entropy. (For the actually-sampled trajectory, this is
-                  the *policy* entropy used in the PPO loss; we keep it
-                  detached from the sampled action itself.)
+                * ``actions``: a dict with two tensors:
+                    - ``"move"``      ``[B, continuous_move_dim]`` float32
+                    - ``"discrete"`` ``[B, num_heads]`` int64
+                * ``log_probs``: ``[B]`` -- summed log-prob across all heads
+                  (continuous + discrete) under a factored independence
+                  assumption.
+                * ``entropy``: ``[B]`` -- summed entropy across heads.
         """
         if hidden.dim() != 2 or hidden.shape[-1] != self.hidden_size:
             raise ValueError(f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}")
         b = hidden.shape[0]
         device = hidden.device
 
-        actions = torch.empty(b, self.num_heads, dtype=torch.int64, device=device)
-        log_prob_sum = torch.zeros(b, device=device)
-        entropy_sum = torch.zeros(b, device=device)
+        # ---- Continuous move ------------------------------------------------
+        mean, std = self._move_params(hidden)
+        if deterministic:
+            move = mean
+            # A degenerate point distribution has zero log-prob and entropy.
+            move_logp = torch.zeros(b, device=device)
+            move_entropy = torch.zeros(b, device=device)
+        else:
+            normal = torch.distributions.Normal(mean, std)
+            move_raw = normal.rsample()
+            # Bound the sample to the box (defensive: the engine also clamps).
+            move = move_raw.clamp(-1.0, 1.0)
+            # Use the *raw* sample for the log-prob so the gradient stays
+            # consistent with the Gaussian likelihood (clamping outside
+            # the active region would otherwise yield zero gradient).
+            move_logp = normal.log_prob(move_raw).sum(-1)
+            move_entropy = normal.entropy().sum(-1)
+
+        # ---- Discrete heads (autoregressive) -------------------------------
+        actions_disc = torch.empty(b, self.num_heads, dtype=torch.int64, device=device)
+        disc_logp_sum = torch.zeros(b, device=device)
+        disc_entropy_sum = torch.zeros(b, device=device)
+        # Condition the discrete cascade on the *move mean* (gradient-friendly,
+        # value-equivalent for deterministic mode, no extra detach needed for
+        # the stochastic branch because we use ``move`` only as a feature).
+        cond_feat = move.detach() if not deterministic else move
         prev_embeddings: list[Tensor] = []
         for i, (head, emb) in enumerate(zip(self.heads, self.embeddings, strict=False)):
-            head_in = torch.cat([hidden, *prev_embeddings], dim=-1) if prev_embeddings else hidden
+            head_in = torch.cat([hidden, cond_feat, *prev_embeddings], dim=-1)
             logits = head(head_in)
             dist = torch.distributions.Categorical(logits=logits)
             act = logits.argmax(dim=-1) if deterministic else dist.sample()
-            actions[:, i] = act
-            log_prob_sum = log_prob_sum + dist.log_prob(act)
-            entropy_sum = entropy_sum + dist.entropy()
+            actions_disc[:, i] = act
+            disc_logp_sum = disc_logp_sum + dist.log_prob(act)
+            disc_entropy_sum = disc_entropy_sum + dist.entropy()
             prev_embeddings.append(emb(act))
-        return actions, log_prob_sum, entropy_sum
+
+        actions_out: dict[str, Tensor] = {"move": move, "discrete": actions_disc}
+        log_prob_sum = move_logp + disc_logp_sum
+        entropy_sum = move_entropy + disc_entropy_sum
+        return actions_out, log_prob_sum, entropy_sum
 
     # --------------------------------------------------------------
     # Evaluation given pre-recorded actions
@@ -283,36 +349,67 @@ class ActorHeads(nn.Module):
     def evaluate(
         self,
         hidden: Tensor,
-        actions: Tensor,
+        actions: Tensor | dict[str, Tensor],
     ) -> tuple[Tensor, Tensor]:
-        """Compute joint log-prob + summed entropy for the given actions.
+        """Compute joint log-prob + summed entropy for ``actions``.
 
         Args:
             hidden: ``[B, hidden_size]`` actor hidden state.
-            actions: ``[B, num_heads]`` int64 previously sampled actions.
+            actions: Either
+                * a dict ``{"move": [B, D] float, "discrete": [B, num_heads] int64}``
+                  (canonical v0.4 format), or
+                * a single int64 tensor ``[B, num_heads]`` (legacy
+                  discrete-only format -- the continuous head's log-prob is
+                  evaluated at the current mean).
 
         Returns:
             ``(log_probs, entropy)`` each shape ``[B]``.
         """
         if hidden.dim() != 2 or hidden.shape[-1] != self.hidden_size:
             raise ValueError(f"hidden must be [B, {self.hidden_size}], got {tuple(hidden.shape)}")
-        if actions.dim() != 2 or actions.shape[1] != self.num_heads:
-            raise ValueError(f"actions must be [B, num_heads={self.num_heads}], got {tuple(actions.shape)}")
         b = hidden.shape[0]
-        log_prob_sum = torch.zeros(b, device=hidden.device)
-        entropy_sum = torch.zeros(b, device=hidden.device)
+
+        # Normalise input.
+        if isinstance(actions, dict):
+            move_actions = actions["move"].to(hidden.device, dtype=hidden.dtype)
+            disc_actions = actions["discrete"].to(hidden.device, dtype=torch.int64)
+        else:
+            disc_actions = actions.to(hidden.device, dtype=torch.int64)
+            # Fall back to deterministic move (use the mean as the "action").
+            with torch.no_grad():
+                mean, _ = self._move_params(hidden)
+                move_actions = mean
+
+        if disc_actions.dim() != 2 or disc_actions.shape[1] != self.num_heads:
+            raise ValueError(
+                f"discrete actions must be [B, num_heads={self.num_heads}], got {tuple(disc_actions.shape)}"
+            )
+        if move_actions.dim() != 2 or move_actions.shape[-1] != self.continuous_move_dim:
+            raise ValueError(
+                f"move actions must be [B, {self.continuous_move_dim}], got {tuple(move_actions.shape)}"
+            )
+
+        # ---- Continuous move ------------------------------------------------
+        mean, std = self._move_params(hidden)
+        normal = torch.distributions.Normal(mean, std)
+        move_logp = normal.log_prob(move_actions).sum(-1)
+        move_entropy = normal.entropy().sum(-1)
+
+        # ---- Discrete heads ------------------------------------------------
+        disc_logp_sum = torch.zeros(b, device=hidden.device)
+        disc_entropy_sum = torch.zeros(b, device=hidden.device)
         prev_embeddings: list[Tensor] = []
-        actions_long = actions.detach().to(torch.int64)
         for i, (head, emb) in enumerate(zip(self.heads, self.embeddings, strict=False)):
-            head_in = torch.cat([hidden, *prev_embeddings], dim=-1) if prev_embeddings else hidden
+            head_in = torch.cat([hidden, move_actions, *prev_embeddings], dim=-1)
             logits = head(head_in)
             dist = torch.distributions.Categorical(logits=logits)
-            # Use out-of-place ``clamp`` so we don't mutate a tensor that may
-            # be reused across PPO epochs (would break autograd).
-            act = actions_long[:, i].clamp(0, self.action_dims[i] - 1)
-            log_prob_sum = log_prob_sum + dist.log_prob(act)
-            entropy_sum = entropy_sum + dist.entropy()
+            act = disc_actions[:, i].clamp(0, self.action_dims[i] - 1)
+            disc_logp_sum = disc_logp_sum + dist.log_prob(act)
+            disc_entropy_sum = disc_entropy_sum + dist.entropy()
             prev_embeddings.append(emb(act))
+
+        log_prob_sum = move_logp + disc_logp_sum
+        entropy_sum = move_entropy + disc_entropy_sum
         return log_prob_sum, entropy_sum
 
 
@@ -382,11 +479,17 @@ class KivskiActorCritic(nn.Module):
         gumbel_temp: float = 1.0,
         gru_layers: int = 1,
         actor_embedding_dim: int = 32,
+        continuous_move_dim: int = 2,
     ) -> None:
         super().__init__()
         self.obs_dim: int = int(obs_dim)
         self.joint_obs_dim: int = int(joint_obs_dim)
-        self.action_dims: list[int] = [int(a) for a in action_dims]
+        action_seq = [int(a) for a in action_dims]
+        # Legacy v0.3 list ([9, 6, 9, 8, aim]) -> drop the leading MoveIntent.
+        if len(action_seq) == 5 and action_seq[0] == 9:
+            action_seq = action_seq[1:]
+        self.action_dims: list[int] = action_seq
+        self.continuous_move_dim: int = int(continuous_move_dim)
         self.hidden_size: int = int(hidden_size)
         self.comm_signature_dim: int = int(comm_signature_dim)
         self.comm_value_dim: int = int(comm_value_dim)
@@ -421,6 +524,7 @@ class KivskiActorCritic(nn.Module):
             hidden_size=self.hidden_size,
             action_dims=self.action_dims,
             embedding_dim=self.actor_embedding_dim,
+            continuous_move_dim=self.continuous_move_dim,
         )
         self.value_head = ValueHead(self.joint_obs_dim, self.hidden_size)
 
@@ -498,26 +602,33 @@ class KivskiActorCritic(nn.Module):
             deterministic: argmax sampling if True.
 
         Returns:
-            Dict with keys:
+            Dict with keys (v0.4 mixed action space):
 
-            * ``actions``      ``[B, num_heads]`` int64
-            * ``log_probs``    ``[B]`` summed joint log prob
-            * ``entropy``      ``[B]`` summed entropy across heads
-            * ``new_hidden``   ``[num_layers, B, hidden_size]``
-            * ``comm_signature`` ``[B, comm_signature_dim]``
-            * ``comm_value``   ``[B, comm_value_dim]`` (raw value, pre-gate)
-            * ``comm_gate``    ``[B, 1]`` open mask in ``[0, 1]``
-            * ``comm_gate_logits`` ``[B, 1]``
-            * ``comm_payload`` ``[B, comm_value_dim]`` -- gated value to broadcast
-            * ``value`` (optional) ``[B, 1]`` if ``joint_obs`` is provided
+            * ``actions``        Dict ``{"move": [B, 2] float, "discrete":
+              [B, num_heads] int64}``.
+            * ``move_actions``   alias for ``actions["move"]`` for legacy
+              callers.
+            * ``discrete_actions`` alias for ``actions["discrete"]``.
+            * ``log_probs``      ``[B]`` summed joint log-prob
+              (continuous + discrete).
+            * ``entropy``        ``[B]`` summed entropy across heads.
+            * ``new_hidden``     ``[num_layers, B, hidden_size]``.
+            * ``comm_signature`` ``[B, comm_signature_dim]``.
+            * ``comm_value``     ``[B, comm_value_dim]`` (raw value, pre-gate).
+            * ``comm_gate``      ``[B, 1]`` open mask in ``[0, 1]``.
+            * ``comm_gate_logits`` ``[B, 1]``.
+            * ``comm_payload``   ``[B, comm_value_dim]`` gated value to broadcast.
+            * ``value`` (optional) ``[B, 1]`` if ``joint_obs`` is provided.
         """
         actor_hidden, new_hidden = self._forward_core(obs, hidden_state, received_comm, masks=masks)
         actions, log_probs, entropy = self.actor_heads.sample(actor_hidden, deterministic=deterministic)
         sig, val = self.comm_encoder(actor_hidden)
         gate_logits, gate_open = self.comm_gate(actor_hidden, temperature=self.gumbel_temp)
         payload = val * gate_open
-        out: dict[str, Tensor] = {
+        out: dict[str, Any] = {
             "actions": actions,
+            "move_actions": actions["move"],
+            "discrete_actions": actions["discrete"],
             "log_probs": log_probs,
             "entropy": entropy,
             "new_hidden": new_hidden,
@@ -536,14 +647,16 @@ class KivskiActorCritic(nn.Module):
         obs: Tensor,
         hidden_state: Tensor,
         received_comm: Tensor,
-        prev_actions: Tensor,
+        prev_actions: Tensor | dict[str, Tensor],
         joint_obs: Tensor,
         masks: Tensor | None = None,
     ) -> dict[str, Tensor]:
         """Re-evaluate logged actions for the PPO update.
 
-        Returns a dict with ``log_probs``, ``entropy``, ``value``, and the
-        new hidden state for completeness.
+        ``prev_actions`` is either the canonical v0.4 dict
+        ``{"move": [B, 2], "discrete": [B, num_heads]}`` or a legacy int64
+        tensor ``[B, num_heads]`` (the actor head falls back to evaluating
+        the move at the current Gaussian mean).
         """
         actor_hidden, new_hidden = self._forward_core(obs, hidden_state, received_comm, masks=masks)
         log_probs, entropy = self.actor_heads.evaluate(actor_hidden, prev_actions)
