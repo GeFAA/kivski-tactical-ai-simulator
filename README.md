@@ -193,7 +193,7 @@ pytest --cov=kivski_sim --cov=kivski_agents --cov-report=term-missing
                                 +-----------------+      | + map + replays  |
                                          |               +------------------+
                                          v                       |
-                                +-----------------+               v
+                                +-----------------+              v
                                 | League + Elo +  |      +------------------+
                                 | Curriculum      |      | Determinism via  |
                                 +-----------------+      | RngHub channels  |
