@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
   formatTimeAgo,
   getCloudStatus,
   pullAndLoadCloudCheckpoint,
   pullCloudCheckpoint,
-  type CloudStatusInfo,
 } from "@/lib/api-client";
+import { useStore } from "@/lib/store";
 
 /**
  * Cloud Sync panel mounted inside the Settings drawer's Training tab.
@@ -15,11 +15,12 @@ import {
  *   - one-click pull the bytes into ``models/checkpoints/cloud/``,
  *   - optionally load the pulled file as the active viewer policy.
  *
- * Auto-refreshes the status every 60 s while mounted. Visually mirrors
- * the SettingsDrawer's panel-2 / rounded-border idiom.
+ * Reads ``cloudStatus`` from the store (refreshed by the App-level
+ * 60 s poll) instead of running its own duplicate poll. The Refresh
+ * button triggers an immediate fetch and writes the result back to the
+ * store so every cloud-aware consumer (e.g. the TrainingPill) sees the
+ * fresh data at the same time.
  */
-
-const REFRESH_INTERVAL_MS = 60_000;
 
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
   <div className="mb-2 text-[10px] uppercase tracking-widest text-kivski-muted">
@@ -35,7 +36,9 @@ const Row = ({ label, value }: { label: string; value: React.ReactNode }) => (
 );
 
 const CloudSyncPanel = () => {
-  const [status, setStatus] = useState<CloudStatusInfo | null>(null);
+  const status = useStore((s) => s.cloudStatus);
+  const setCloudStatus = useStore((s) => s.setCloudStatus);
+  const bumpCheckpoints = useStore((s) => s.bumpCheckpoints);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +50,7 @@ const CloudSyncPanel = () => {
     setError(null);
     try {
       const s = await getCloudStatus();
-      if (aliveRef.current) setStatus(s);
+      if (aliveRef.current) setCloudStatus(s);
     } catch (err) {
       if (aliveRef.current) {
         setError(err instanceof Error ? err.message : String(err));
@@ -55,19 +58,7 @@ const CloudSyncPanel = () => {
     } finally {
       if (aliveRef.current) setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    aliveRef.current = true;
-    void refresh();
-    const id = window.setInterval(() => {
-      void refresh();
-    }, REFRESH_INTERVAL_MS);
-    return () => {
-      aliveRef.current = false;
-      window.clearInterval(id);
-    };
-  }, [refresh]);
+  }, [setCloudStatus]);
 
   const onPull = async () => {
     setBusy("pull");
@@ -77,6 +68,9 @@ const CloudSyncPanel = () => {
       const r = await pullCloudCheckpoint();
       setConfirm(`Pulled ${r.name}`);
       window.setTimeout(() => setConfirm(null), 2_500);
+      // Force the SettingsDrawer's load-checkpoint list to re-fetch so
+      // the freshly-downloaded file shows up immediately.
+      bumpCheckpoints();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -93,6 +87,8 @@ const CloudSyncPanel = () => {
       const r = await pullAndLoadCloudCheckpoint();
       setConfirm(`Loaded ${r.name}`);
       window.setTimeout(() => setConfirm(null), 2_500);
+      // Same as ``onPull``: the file is now on disk, refresh the picker.
+      bumpCheckpoints();
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

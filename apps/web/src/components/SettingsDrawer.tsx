@@ -401,7 +401,16 @@ const TrainingTab = () => {
   const [resumeTarget, setResumeTarget] = useState<ResumeTargetInfo | null>(
     null,
   );
-  const [showCloudSync, setShowCloudSync] = useState(false);
+  // Expanded by default — cloud-first users were having to scroll past
+  // Goal+Status to find the panel, then hit a chevron to open it.
+  const [showCloudSync, setShowCloudSync] = useState(true);
+
+  // Bumped by ``bumpCheckpoints`` (called by CloudSyncPanel after a
+  // successful pull) so the load-checkpoint list reloads without the
+  // user having to close + reopen the drawer.
+  const checkpointsRefreshNonce = useStore(
+    (s) => s.checkpointsRefreshNonce,
+  );
 
   useEffect(() => {
     let alive = true;
@@ -428,7 +437,11 @@ const TrainingTab = () => {
     return () => {
       alive = false;
     };
-  }, []);
+    // ``checkpointsRefreshNonce`` is the trigger; ``configs`` /
+    // ``resumeTarget`` are still fetched alongside because the cost is
+    // dominated by the network round-trip and bundling them keeps the
+    // effect simple.
+  }, [checkpointsRefreshNonce]);
 
   const send = async (
     label: string,

@@ -10,6 +10,7 @@ import TrainingPanel from "@/components/TrainingPanel";
 import SettingsDrawer from "@/components/SettingsDrawer";
 import AgentDetailModal from "@/components/AgentDetailModal";
 import {
+  getCloudStatus,
   getTrainingGoalSpec,
   getTrainingStatus,
   subscribeMatch,
@@ -17,16 +18,32 @@ import {
 import { formatDuration } from "@/lib/format";
 import { useStore } from "@/lib/store";
 
+// Cloud is considered "active" if the latest remote checkpoint was
+// uploaded within this window. Trades off staleness vs noise — pods that
+// drop offline for >10 min lose the badge, which is the right behaviour:
+// a long-stale cloud is no different from idle.
+const CLOUD_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+// Poll interval for ``/api/cloud/status`` from the App-level effect. The
+// drawer's CloudSyncPanel reads the cached value out of the store
+// instead of running its own duplicate poll.
+const CLOUD_POLL_INTERVAL_MS = 60_000;
+
 /**
- * Subtle bottom-right pill rendered in Simple mode while training is
- * running. Clicking opens the settings drawer on the Training tab so a
- * curious user can see what's going on without learning the rest of the
- * Advanced UI. Stays hidden when training is idle (no clutter).
+ * Subtle bottom-right pill rendered in Simple mode when either a LOCAL
+ * trainer or a CLOUD pod is active. Clicking opens the settings drawer
+ * on the Training tab so a curious user can see what's going on without
+ * learning the rest of the Advanced UI. Stays hidden when both are
+ * idle (no clutter).
  *
- * Surfaces the active training goal title + the latest win-rate vs the
- * random baseline so a glance at the pill tells the user both *what*
- * the trainer is optimising for and *how it's going* — without having
- * to open the drawer.
+ * Source-priority rule: if BOTH local and cloud are running, local
+ * wins (the user has hands-on; the 24/7 cloud pod is a background
+ * fact). Cloud-only renders with a distinct cyan accent + a ``☁️ Cloud
+ * training`` label so a glance at the pill tells the user where the
+ * compute is happening.
+ *
+ * Cloud is considered active when ``cloudStatus.latest_checkpoint.uploaded_at``
+ * is within the last 10 min — a longer gap is indistinguishable from
+ * idle as far as the user is concerned.
  */
 const TrainingPill = () => {
   const uiMode = useStore((s) => s.uiMode);
@@ -46,6 +63,7 @@ const TrainingPill = () => {
   );
   const trainingGoal = useStore((s) => s.trainingGoal);
   const metricsHistory = useStore((s) => s.metricsHistory);
+  const cloudStatus = useStore((s) => s.cloudStatus);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const setSettingsTab = useStore((s) => s.setSettingsTab);
 
@@ -58,12 +76,22 @@ const TrainingPill = () => {
     return undefined;
   }, [metricsHistory]);
 
-  if (uiMode !== "simple" || !running) return null;
+  // Detect whether the cloud pod is currently uploading checkpoints.
+  // ``uploaded_at`` is epoch-seconds (see ``api-client.formatTimeAgo``),
+  // so multiply by 1000 to compare against ``Date.now()``.
+  const cloudActive = useMemo(() => {
+    const uploadedAt = cloudStatus?.latest_checkpoint?.uploaded_at;
+    if (typeof uploadedAt !== "number") return false;
+    const ms = uploadedAt < 1e12 ? uploadedAt * 1000 : uploadedAt;
+    return Date.now() - ms < CLOUD_ACTIVE_WINDOW_MS;
+  }, [cloudStatus]);
 
+  if (uiMode !== "simple" || (!running && !cloudActive)) return null;
+
+  // Local takes priority — when the user is running a hands-on trainer
+  // the cloud is a background fact, not the headline.
+  const showLocal = running;
   const spec = getTrainingGoalSpec(trainingGoal);
-  // Prefer the running-session time; fall back to the cumulative
-  // counter for the rare moment between trainer-start and the first
-  // clock tick when only the total is known.
   const sessionLabel =
     typeof currentSessionSeconds === "number" && currentSessionSeconds > 0
       ? formatDuration(currentSessionSeconds)
@@ -72,11 +100,6 @@ const TrainingPill = () => {
     typeof totalTrainedSeconds === "number"
       ? formatDuration(totalTrainedSeconds)
       : null;
-  // "Agent game-time" — wall-clock × num_envs × frame_skip × tick_dt,
-  // aggregated across every recorded run. This is the number the user
-  // explicitly asked for: with N envs running in parallel each ticking
-  // their own simulated clock, an hour of wall-clock equals tens of
-  // thousands of agent hours of experience.
   const totalSimLabel =
     typeof totalSimulatedSeconds === "number" && totalSimulatedSeconds > 0
       ? formatDuration(totalSimulatedSeconds)
@@ -86,12 +109,53 @@ const TrainingPill = () => {
     currentSessionSimulatedSeconds > 0
       ? formatDuration(currentSessionSimulatedSeconds)
       : null;
+
+  // ---- Cloud-only render path ----
+  if (!showLocal) {
+    const ckpt = cloudStatus?.latest_checkpoint;
+    const cloudEpisode = cloudStatus?.metrics_summary?.episode;
+    const cloudTooltip = [
+      `Goal: ${spec.title}`,
+      ckpt?.name ? `Latest checkpoint: ${ckpt.name}` : null,
+      "Click to open the Cloud Sync panel.",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          setSettingsTab("training");
+          setSettingsOpen(true);
+        }}
+        className="fixed bottom-20 right-4 z-30 inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-kivski-panel/95 px-3 py-1.5 text-[11px] text-kivski-text shadow-lg backdrop-blur transition-colors hover:border-cyan-400 hover:bg-kivski-panel"
+        title={cloudTooltip}
+        aria-label={`Cloud training active${
+          typeof cloudEpisode === "number" ? `, episode ${cloudEpisode}` : ""
+        }`}
+      >
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse-slow" />
+        <span className="font-medium text-cyan-300">
+          {"☁️ Cloud training"}
+        </span>
+        {typeof cloudEpisode === "number" && (
+          <>
+            <span className="text-kivski-muted">·</span>
+            <span className="stat text-kivski-muted">ep {cloudEpisode}</span>
+          </>
+        )}
+      </button>
+    );
+  }
+
+  // ---- Local render path (with optional cloud-also-active hint) ----
   const tooltip = [
     `Goal: ${spec.title}`,
     totalLabel ? `Total trained: ${totalLabel}` : null,
     sessionLabel ? `Current session: ${sessionLabel}` : null,
     totalSimLabel ? `Agent-game-time: ${totalSimLabel}` : null,
     sessionSimLabel ? `Session agent-time: ${sessionSimLabel}` : null,
+    cloudActive ? "Cloud pod also active in the background." : null,
     "Click to open the Training panel.",
   ]
     .filter(Boolean)
@@ -124,6 +188,18 @@ const TrainingPill = () => {
           <span className="text-kivski-muted">·</span>
           <span className="stat text-kivski-text" aria-label={`Win rate vs random: ${latestWr.toFixed(2)}`}>
             WR {latestWr.toFixed(2)}
+          </span>
+        </>
+      )}
+      {cloudActive && (
+        <>
+          <span className="text-kivski-muted">·</span>
+          <span
+            className="text-cyan-300"
+            aria-label="Cloud pod also active"
+            title="Cloud pod also active"
+          >
+            {"☁️"}
           </span>
         </>
       )}
@@ -232,6 +308,7 @@ const App = () => {
   const setCurrentPolicies = useStore((s) => s.setCurrentPolicies);
   const setAutoReload = useStore((s) => s.setAutoReload);
   const pushPolicyReload = useStore((s) => s.pushPolicyReload);
+  const setCloudStatus = useStore((s) => s.setCloudStatus);
   // `matchToken` is incremented by `MatchSetupModal` after POSTing a new
   // comparison match — it forces this effect to re-run, which tears down
   // the current WebSocket and opens a fresh one against the new match.
@@ -272,6 +349,32 @@ const App = () => {
       window.clearInterval(id);
     };
   }, [setTrainingStatus]);
+
+  // Lifted cloud-status poll: lives at the App level so the
+  // ``TrainingPill`` (rendered in Simple mode, outside the drawer) and
+  // the ``CloudSyncPanel`` (only mounted when the drawer is open) read
+  // the same single source of truth. Without this, the pill would
+  // never know about a 24/7 cloud pod until the user opened the
+  // drawer.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await getCloudStatus();
+        if (!alive) return;
+        setCloudStatus(s);
+      } catch {
+        // ``getCloudStatus`` already swallows fetch errors and returns
+        // a "not configured" stub, but defensively guard anyway.
+      }
+    };
+    void tick();
+    const id = window.setInterval(tick, CLOUD_POLL_INTERVAL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [setCloudStatus]);
 
   // Wire up the live match WebSocket once at mount. The handle's `.close()`
   // tears down the reconnect loop on hot-reload / unmount.

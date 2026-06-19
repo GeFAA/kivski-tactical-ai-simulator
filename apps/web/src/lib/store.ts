@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { DEFAULT_TRAINING_GOAL, type TrainingGoal } from "./api-client";
+import {
+  DEFAULT_TRAINING_GOAL,
+  type CloudStatusInfo,
+  type TrainingGoal,
+} from "./api-client";
 import type {
   AgentInspection,
   AgentSnapshot,
@@ -185,6 +189,23 @@ interface MetricsState {
   roundResults: RoundResult[];
   /** Downsampled per-side position samples for the heatmap. */
   heatmapPositions: { side: AgentSnapshot["side"]; x: number; y: number }[];
+  /**
+   * Latest snapshot of ``/api/cloud/status`` polled at App-level. Shared
+   * by the cloud-aware ``TrainingPill`` (so a 24/7 cloud pod is visible
+   * outside the drawer) and ``CloudSyncPanel`` (which consumes this
+   * instead of running its own duplicate poll). ``null`` until the first
+   * successful poll. The optional ``updatedAt`` lets consumers know how
+   * fresh the data is.
+   */
+  cloudStatus: CloudStatusInfo | null;
+  cloudStatusUpdatedAt: number | null;
+  /**
+   * Monotonically-incrementing counter bumped by :func:`bumpCheckpoints`
+   * after a successful cloud pull. The SettingsDrawer's TrainingTab
+   * re-runs its checkpoint-list fetch when this changes so the user sees
+   * the freshly-pulled file without closing+reopening the drawer.
+   */
+  checkpointsRefreshNonce: number;
 }
 
 interface Actions {
@@ -271,6 +292,18 @@ interface Actions {
    * obvious in DevTools.
    */
   setTrainingGoal: (goal: TrainingGoal) => void;
+  /**
+   * Replace the cloud-status snapshot (or clear it back to ``null`` when
+   * the backend is unreachable). Stamps ``cloudStatusUpdatedAt`` with the
+   * current epoch-ms so consumers can ignore stale data.
+   */
+  setCloudStatus: (s: CloudStatusInfo | null) => void;
+  /**
+   * Bump the checkpoint refresh nonce. Wires the cloud Pull / Pull&Load
+   * buttons up to the load-checkpoint picker so the freshly-pulled file
+   * shows up immediately without a drawer close+reopen.
+   */
+  bumpCheckpoints: () => void;
 
   reset: () => void;
 }
@@ -331,6 +364,9 @@ const initialMetrics: MetricsState = {
   economyHistory: [],
   roundResults: [],
   heatmapPositions: [],
+  cloudStatus: null,
+  cloudStatusUpdatedAt: null,
+  checkpointsRefreshNonce: 0,
 };
 
 // ---------- Heatmap sampling helpers ----------
@@ -666,6 +702,10 @@ export const useStore = create<AppState>()(persist((set) => ({
       /* ignore quota / private-mode errors */
     }
   },
+  setCloudStatus: (s) =>
+    set({ cloudStatus: s, cloudStatusUpdatedAt: s ? Date.now() : null }),
+  bumpCheckpoints: () =>
+    set((s) => ({ checkpointsRefreshNonce: s.checkpointsRefreshNonce + 1 })),
 
   reset: () =>
     set((s) => ({
