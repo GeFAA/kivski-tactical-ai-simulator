@@ -78,27 +78,57 @@ fi
 # --- 4c. proactively reject incompat checkpoints (avoid crash + restart) ----
 # Compare arch fields in the .pt.json sidecar against current config; if
 # mismatch (e.g. hidden_size bumped), archive + start fresh.
+#
+# Reads the keys that mappo.py actually writes (sidecar.model_arch.*) and
+# captures stderr+stdout so a real Python error doesn't get swallowed and
+# misclassified as "arch mismatch".
 if [[ -n "${RESUME_CKPT}" ]]; then
     sidecar="${RESUME_CKPT}.json"
     if [[ -f "${sidecar}" ]]; then
-        if ! python - <<PYCHECK >/dev/null 2>&1
+        compat_out="$(python - <<PYCHECK 2>&1
 import json, sys, yaml
-sidecar = json.load(open("${sidecar}"))
-cfg = yaml.safe_load(open("${CONFIG_FILE}"))
-ml = cfg.get("ml", {})
-keys = ("hidden_size", "gru_layers", "comm_attention_heads", "comm_embedding_dim")
-ckpt_arch = sidecar.get("env_shape", {}) | sidecar.get("model_arch", {})
-for k in keys:
-    if k in ml and k in ckpt_arch and int(ml[k]) != int(ckpt_arch[k]):
-        sys.exit(1)
+try:
+    sidecar = json.load(open("${sidecar}"))
+    cfg = yaml.safe_load(open("${CONFIG_FILE}"))
+    ml = cfg.get("ml") or {}
+    arch = sidecar.get("model_arch") or {}
+    mismatches = []
+    for k in ("hidden_size", "gru_layers", "comm_attention_heads"):
+        ckpt_v = arch.get(k)
+        cfg_v = ml.get(k)
+        if ckpt_v is None or cfg_v is None:
+            continue
+        if int(cfg_v) != int(ckpt_v):
+            mismatches.append(f"{k}: cfg={cfg_v} ckpt={ckpt_v}")
+    if mismatches:
+        print("MISMATCH " + "; ".join(mismatches))
+        sys.exit(0)
+    print("ok")
+except Exception as e:
+    print(f"ERROR {type(e).__name__}: {e}")
+    sys.exit(0)
 PYCHECK
-        then
-            ts="$(date -u +%Y%m%d-%H%M%S)"
-            log "checkpoint ${RESUME_CKPT} arch mismatches config — archiving + fresh start"
-            mv "${PERSIST_CKPT_DIR}" "${PERSIST_CKPT_DIR}_archive_${ts}" 2>/dev/null || true
-            mkdir -p "${PERSIST_CKPT_DIR}"
-            RESUME_CKPT=""
-        fi
+)" || true
+        case "${compat_out}" in
+            MISMATCH*)
+                ts="$(date -u +%Y%m%d-%H%M%S)"
+                log "checkpoint ${RESUME_CKPT} arch mismatch (${compat_out#MISMATCH })"
+                log "archiving ${PERSIST_CKPT_DIR} -> ${PERSIST_CKPT_DIR}_archive_${ts}"
+                mv "${PERSIST_CKPT_DIR}" "${PERSIST_CKPT_DIR}_archive_${ts}" 2>/dev/null || true
+                mkdir -p "${PERSIST_CKPT_DIR}"
+                RESUME_CKPT=""
+                ;;
+            ok)
+                ;;
+            ERROR*)
+                log "compat-check error: ${compat_out#ERROR }"
+                log "falling through — trainer will validate at load time"
+                ;;
+            *)
+                log "compat-check unexpected output: ${compat_out}"
+                log "falling through — trainer will validate at load time"
+                ;;
+        esac
     fi
 fi
 
