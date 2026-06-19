@@ -101,8 +101,7 @@ def _pick_latest(files: list[str]) -> str | None:
     candidates = [
         f
         for f in files
-        if f.startswith("checkpoints/")
-        and any(f.lower().endswith(ext) for ext in _VALID_EXTS)
+        if f.startswith("checkpoints/") and any(f.lower().endswith(ext) for ext in _VALID_EXTS)
     ]
     if not candidates:
         return None
@@ -172,9 +171,7 @@ async def cloud_status() -> dict[str, Any]:
                     filename=sidecar_path,
                     token=token,
                 )
-                metadata = json.loads(
-                    Path(sidecar_local).read_text(encoding="utf-8")
-                )
+                metadata = json.loads(Path(sidecar_local).read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001 -- sidecar is optional
                 metadata = {}
 
@@ -203,9 +200,7 @@ async def cloud_status() -> dict[str, Any]:
                 "metadata": metadata,
             }
             episode = metadata.get("episode") or metadata.get("episodes")
-            total_env_steps = metadata.get("total_env_steps") or metadata.get(
-                "env_steps"
-            )
+            total_env_steps = metadata.get("total_env_steps") or metadata.get("env_steps")
             score = metadata.get("score") or metadata.get("winrate_vs_random")
             if any(v is not None for v in (episode, total_env_steps, score)):
                 metrics_summary = {
@@ -260,9 +255,7 @@ def _do_pull() -> dict[str, Any]:
     try:
         files = api.list_repo_files(repo_id=repo_id, token=token)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=502, detail=f"HF list_repo_files failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"HF list_repo_files failed: {exc}") from exc
 
     latest = _pick_latest(list(files))
     if latest is None:
@@ -281,9 +274,7 @@ def _do_pull() -> dict[str, Any]:
             local_dir=str(cloud_dir),
         )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=502, detail=f"HF download failed: {exc}"
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"HF download failed: {exc}") from exc
 
     # Best-effort sidecar download.
     sidecar_remote = latest + ".json"
