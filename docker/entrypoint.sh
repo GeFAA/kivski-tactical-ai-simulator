@@ -7,8 +7,9 @@
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/workspace/kivski}"
-CONFIG_FILE="${KIVSKI_CONFIG:-configs/turbo.yaml}"
+CONFIG_FILE="${KIVSKI_CONFIG:-configs/production.yaml}"
 RESUME_CKPT="${KIVSKI_RESUME_CKPT:-}"
+PERSIST_CKPT_DIR="${PERSIST_CKPT_DIR:-/workspace/persistent/checkpoints}"
 
 log() { printf '[entrypoint %s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
@@ -53,11 +54,24 @@ if command -v huggingface-cli >/dev/null 2>&1; then
         log "warn: huggingface-cli login failed (token will still be used via env)"
 fi
 
-# --- 4. exec the trainer ----------------------------------------------------
-log "starting kivski-train --config ${CONFIG_FILE}"
+# --- 4. resolve auto-resume from persistent volume --------------------------
+mkdir -p "${PERSIST_CKPT_DIR}"
+if [[ -z "${RESUME_CKPT}" ]]; then
+    # Prefer best.pt, else newest main_ep_*.pt
+    if [[ -f "${PERSIST_CKPT_DIR}/best.pt" ]]; then
+        RESUME_CKPT="${PERSIST_CKPT_DIR}/best.pt"
+    else
+        latest="$(ls -1t "${PERSIST_CKPT_DIR}"/main_ep_*.pt 2>/dev/null | head -1 || true)"
+        if [[ -n "${latest}" ]]; then RESUME_CKPT="${latest}"; fi
+    fi
+fi
+
+# --- 5. exec the trainer ----------------------------------------------------
+log "starting kivski-train train -c ${CONFIG_FILE}"
 if [[ -n "${RESUME_CKPT}" ]]; then
     log "resuming from ${RESUME_CKPT}"
-    exec kivski-train --config "${CONFIG_FILE}" --resume "${RESUME_CKPT}"
+    exec kivski-train train -c "${CONFIG_FILE}" --resume "${RESUME_CKPT}"
 else
-    exec kivski-train --config "${CONFIG_FILE}"
+    log "no checkpoint to resume — fresh run"
+    exec kivski-train train -c "${CONFIG_FILE}"
 fi
