@@ -27,7 +27,7 @@
     },
     {
       "key": "KIVSKI_CONFIG",
-      "value": "configs/turbo.yaml"
+      "value": "configs/production.yaml"
     }
   ]
 }
