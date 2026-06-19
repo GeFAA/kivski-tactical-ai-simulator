@@ -47,12 +47,12 @@ fi
 log "ensuring package is installed (editable)..."
 pip install -e . >/dev/null 2>&1 || pip install -e .
 
-# Login to HF so the trainer's cloud sync (if enabled) can push.
-if command -v huggingface-cli >/dev/null 2>&1; then
-    log "logging into Hugging Face Hub..."
-    huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential >/dev/null 2>&1 || \
-        log "warn: huggingface-cli login failed (token will still be used via env)"
-fi
+# HF token is consumed via the HF_TOKEN env var directly by huggingface_hub
+# (cloud_sync.py passes token=os.environ['HF_TOKEN'] to HfApi). We DELIBERATELY
+# do NOT call `huggingface-cli login --add-to-git-credential` because it
+# persists the token cleartext to /root/.git-credentials AND ~/.huggingface/token
+# -- a snapshot/template/exec-leak risk on a shared cloud GPU.
+log "HF token will be used from HF_TOKEN env var (no disk persistence)"
 
 # --- 4. archive checkpoints if previous run crashed on incompat -------------
 CRASH_REASON_FILE="${PERSIST_DIR:-/workspace/persistent}/CRASH_REASON.txt"
