@@ -116,8 +116,14 @@ reward_shaping:
   damage_dealt_per_hp: 0.016
   damage_received_per_hp: -0.008
   survival_per_second: 0.002
-  successful_plant: 1.2
-  successful_defuse: 1.0
+  # v0.6.1: these fire EVERY inner-tick while bomb is planted/defusing
+  # (engine design at env.py:1159, 1174). Frame-skip=6 + tick_rate=10 + a
+  # ~40s planted phase = up to ~400 inner ticks, so the per-tick value
+  # aggregates to (val * 400) per round per agent. We want this aggregate
+  # to be ~1.0 (smaller than defenders_elim_bonus=3.0 and the engine's
+  # plant/defuse outcome reward), so per-tick must be ~0.0025.
+  successful_plant: 0.0025   # aggregate ~1.0 per planted round per attacker
+  successful_defuse: 0.002   # aggregate ~0.8 per defused round per defender
   bomb_pickup: 0.10
   useful_trade: 0.40
   pointless_death: -0.50
