@@ -396,7 +396,10 @@ class ThreadedVecEnv:
             if total_rounds > 0
             else 0.0
         )
-        total_kills = int(sum(s.survivors_yellow + s.survivors_blue for s in summaries))
+        # Sum of survivors across rounds (per-round "alive count" aggregate).
+        # Historical name was ``total_kills`` but the formula never tracked
+        # kills — see ``EpisodeStats.total_survivors``.
+        total_survivors = int(sum(s.survivors_yellow + s.survivors_blue for s in summaries))
         total_deaths = 0
         for s in summaries:
             total_deaths += int(2 * self.team_size - s.survivors_yellow - s.survivors_blue)
@@ -416,7 +419,7 @@ class ThreadedVecEnv:
             winner=winner,
             total_rounds=int(total_rounds),
             avg_round_duration_ticks=float(avg_duration),
-            total_kills=int(total_kills),
+            total_survivors=int(total_survivors),
             total_deaths=int(total_deaths),
             bombs_planted=int(bombs_planted),
             bombs_defused=int(bombs_defused),
@@ -977,7 +980,10 @@ class SubprocVecEnv:
             if total_rounds > 0
             else 0.0
         )
-        total_kills = int(
+        # Sum of survivors across rounds (per-round "alive count" aggregate).
+        # Historical name was ``total_kills`` but the formula never tracked
+        # kills — see ``EpisodeStats.total_survivors``.
+        total_survivors = int(
             sum(int(s.get("survivors_yellow", 0)) + int(s.get("survivors_blue", 0)) for s in round_summaries)
         )
         total_deaths = 0
@@ -1001,7 +1007,7 @@ class SubprocVecEnv:
             winner=winner,
             total_rounds=int(total_rounds),
             avg_round_duration_ticks=float(avg_duration),
-            total_kills=int(total_kills),
+            total_survivors=int(total_survivors),
             total_deaths=int(total_deaths),
             bombs_planted=int(bombs_planted),
             bombs_defused=int(bombs_defused),

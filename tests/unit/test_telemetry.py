@@ -345,7 +345,7 @@ def test_episode_stats_to_dict_keys() -> None:
         winner="yellow",
         total_rounds=24,
         avg_round_duration_ticks=520.5,
-        total_kills=120,
+        total_survivors=120,
         total_deaths=118,
         bombs_planted=14,
         bombs_defused=6,

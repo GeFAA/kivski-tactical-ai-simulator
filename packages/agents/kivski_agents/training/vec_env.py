@@ -400,7 +400,10 @@ class VecEnvWrapper:
             if total_rounds > 0
             else 0.0
         )
-        total_kills = int(sum(s.survivors_yellow + s.survivors_blue for s in summaries))
+        # Sum of survivors across rounds (per-round "alive count" aggregate).
+        # Historical name was ``total_kills`` but the formula never tracked
+        # kills — see ``EpisodeStats.total_survivors``.
+        total_survivors = int(sum(s.survivors_yellow + s.survivors_blue for s in summaries))
         # "Deaths" approximation: every match starts with ``team_size`` alive on
         # each side and ends with ``survivors_*`` alive in the last summary.
         total_deaths = 0
@@ -422,7 +425,7 @@ class VecEnvWrapper:
             winner=winner,
             total_rounds=int(total_rounds),
             avg_round_duration_ticks=float(avg_duration),
-            total_kills=int(total_kills),
+            total_survivors=int(total_survivors),
             total_deaths=int(total_deaths),
             bombs_planted=int(bombs_planted),
             bombs_defused=int(bombs_defused),

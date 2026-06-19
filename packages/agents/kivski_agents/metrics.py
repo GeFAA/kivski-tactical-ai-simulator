@@ -46,7 +46,10 @@ class EpisodeStats:
     winner: str  # "yellow" | "blue" | "draw"
     total_rounds: int
     avg_round_duration_ticks: float
-    total_kills: int
+    # Sum of survivors across all round summaries (a per-round "alive count"
+    # aggregate). Historically named ``total_kills`` but the formula is
+    # ``sum(survivors_yellow + survivors_blue)`` — never tracked kills.
+    total_survivors: int
     total_deaths: int
     bombs_planted: int
     bombs_defused: int
@@ -71,7 +74,11 @@ def episode_stats_to_dict(s: EpisodeStats) -> dict[str, float]:
         "episode/winner_code": float(_winner_code(s.winner)),
         "episode/total_rounds": float(s.total_rounds),
         "episode/avg_round_duration_ticks": float(s.avg_round_duration_ticks),
-        "episode/total_kills": float(s.total_kills),
+        # Emit both names so existing CSV / TensorBoard / W&B dashboards keep
+        # working while consumers migrate. TODO: drop ``episode/total_kills``
+        # alias once downstream dashboards reference ``episode/total_survivors``.
+        "episode/total_survivors": float(s.total_survivors),
+        "episode/total_kills": float(s.total_survivors),
         "episode/total_deaths": float(s.total_deaths),
         "episode/bombs_planted": float(s.bombs_planted),
         "episode/bombs_defused": float(s.bombs_defused),
