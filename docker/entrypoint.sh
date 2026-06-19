@@ -103,11 +103,17 @@ PYCHECK
 fi
 
 # --- 5. exec the trainer ----------------------------------------------------
-log "starting kivski-train train -c ${CONFIG_FILE}"
+# Pass persistent dirs explicitly so writes survive pod restarts/preemption.
+PERSIST_LOG_DIR="${PERSIST_LOG_DIR:-/workspace/persistent/logs}"
+mkdir -p "${PERSIST_LOG_DIR}"
+
+train_args=(train -c "${CONFIG_FILE}" --checkpoint-dir "${PERSIST_CKPT_DIR}" --log-dir "${PERSIST_LOG_DIR}")
 if [[ -n "${RESUME_CKPT}" ]]; then
     log "resuming from ${RESUME_CKPT}"
-    exec kivski-train train -c "${CONFIG_FILE}" --resume "${RESUME_CKPT}"
+    train_args+=(--resume "${RESUME_CKPT}")
 else
     log "no checkpoint to resume — fresh run"
-    exec kivski-train train -c "${CONFIG_FILE}"
 fi
+
+log "starting kivski-train ${train_args[*]}"
+exec kivski-train "${train_args[@]}"
