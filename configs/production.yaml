@@ -102,9 +102,13 @@ training:
 league:
   population_size: 4
   snapshot_every_episodes: 500
+  # v0.6.1: fractions MUST sum to 1.0 -- league.py falls through to live
+  # self-play when the cumulative threshold misses, so the previous
+  # 0.0+0.5+0.3=0.8 hid 20% silent self-play vs the current main policy
+  # and undermined the v0.5 WR-fix that intentionally kept exploit at 0.
   exploit_fraction: 0.0
-  random_fraction: 0.50
-  scripted_fraction: 0.30
+  random_fraction: 0.60
+  scripted_fraction: 0.40
 
 reward_shaping:
   enabled: true
