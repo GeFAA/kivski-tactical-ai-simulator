@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from kivski_api.session import REGISTRY
 
@@ -127,21 +128,8 @@ def _load_local_sidecar(local_pt_path: Path) -> dict[str, Any]:
 # ---------- status ----------
 
 
-@router.get("/status")
-async def cloud_status() -> dict[str, Any]:
-    """Return the cached configured-state + latest-checkpoint summary."""
-    cfg = _hf_config()
-    last_pull = _read_last_pull()
-    if cfg is None:
-        return {
-            "configured": False,
-            "repo_id": None,
-            "last_pull": last_pull,
-            "latest_checkpoint": None,
-            "metrics_summary": None,
-        }
-    token, repo_id = cfg
-
+def _do_status_sync(token: str, repo_id: str, last_pull: float | None) -> dict[str, Any]:
+    """Synchronous worker for /status -- runs in threadpool to avoid blocking the FastAPI event loop."""
     try:
         from huggingface_hub import HfApi, hf_hub_download
     except ImportError:
@@ -230,6 +218,24 @@ async def cloud_status() -> dict[str, Any]:
     }
 
 
+@router.get("/status")
+async def cloud_status() -> dict[str, Any]:
+    """Return the cached configured-state + latest-checkpoint summary."""
+    cfg = _hf_config()
+    last_pull = _read_last_pull()
+    if cfg is None:
+        return {
+            "configured": False,
+            "repo_id": None,
+            "last_pull": last_pull,
+            "latest_checkpoint": None,
+            "metrics_summary": None,
+        }
+    token, repo_id = cfg
+    # HF API calls block on network -- run off the event loop.
+    return await run_in_threadpool(_do_status_sync, token, repo_id, last_pull)
+
+
 # ---------- pull ----------
 
 
@@ -304,8 +310,12 @@ def _do_pull() -> dict[str, Any]:
 
 @router.post("/pull")
 async def cloud_pull() -> dict[str, Any]:
-    """Download the latest checkpoint + sidecar into ``models/checkpoints/cloud/``."""
-    return _do_pull()
+    """Download the latest checkpoint + sidecar into ``models/checkpoints/cloud/``.
+
+    Multi-MB HF download is wrapped in run_in_threadpool so it doesn't block
+    other API routes (viewer ticks, live metrics).
+    """
+    return await run_in_threadpool(_do_pull)
 
 
 @router.post("/pull-and-load")
@@ -316,7 +326,7 @@ async def cloud_pull_and_load() -> dict[str, Any]:
     V1 registry only tracks the bare ``stem``, not the full path, so we
     write the same field after a successful download.
     """
-    result = _do_pull()
+    result = await run_in_threadpool(_do_pull)
     name = result["name"]
     REGISTRY.loaded_checkpoint = name
     _LOG.info("cloud pull-and-load -> %s", result["path"])
