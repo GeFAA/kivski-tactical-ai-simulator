@@ -93,6 +93,26 @@ If ruff or mypy flag a hot-path issue you really cannot fix in this PR,
 add a `# noqa: <rule>` or `# type: ignore[<code>]` with a one-line
 comment explaining why, and link an issue tracking the cleanup.
 
+### Pre-commit hook (optional but recommended)
+
+The repo ships a `.pre-commit-config.yaml` that mirrors the ruff steps
+CI runs on every PR. Install it once and `git commit` will refuse to
+let you commit unformatted or lint-broken Python (and will autofix what
+it safely can):
+
+```powershell
+pip install pre-commit
+pre-commit install
+```
+
+After that, every `git commit` runs `ruff check --fix` and
+`ruff format` over staged files before the commit lands. To run the
+hooks manually over the whole tree (e.g. after editing them):
+
+```powershell
+pre-commit run --all-files
+```
+
 ---
 
 ## 4. Branching and commit hygiene
