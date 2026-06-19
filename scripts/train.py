@@ -127,6 +127,19 @@ def train(
         "--auto-envs/--no-auto-envs",
         help="Auto-detect num_envs from CPU count (default uses --num-envs or config).",
     ),
+    checkpoint_dir: str | None = typer.Option(
+        None,
+        "--checkpoint-dir",
+        help=(
+            "Override base dir for checkpoints (default: models/checkpoints). "
+            "Useful for cloud pods writing to /workspace/persistent."
+        ),
+    ),
+    log_dir: str | None = typer.Option(
+        None,
+        "--log-dir",
+        help="Override base dir for run logs (default: models/logs).",
+    ),
 ) -> None:
     """Launch a full MAPPO training run."""
     cfg = load_config(config)
@@ -135,13 +148,15 @@ def train(
 
     torch_device = _pick_device(device)
     rn = run_name or generate_run_name("kivski")
-    log_dir = Path("models/logs") / rn
-    ckpt_dir = Path("models/checkpoints") / rn
-    log_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    log_root = Path(log_dir) if log_dir else Path("models/logs")
+    ckpt_root = Path(checkpoint_dir) if checkpoint_dir else Path("models/checkpoints")
+    run_log_dir = log_root / rn
+    run_ckpt_dir = ckpt_root / rn
+    run_log_dir.mkdir(parents=True, exist_ok=True)
+    run_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     sink_backend = backend if backend is not None else cfg.telemetry.backend
-    sink = make_sink(sink_backend, Path("models/logs"), rn)
+    sink = make_sink(sink_backend, log_root, rn)
 
     # Resolve num_envs:
     # 1) explicit --num-envs always wins
@@ -167,8 +182,8 @@ def train(
         checkpoint_every=int(cfg.training.checkpoint_every_episodes),
         eval_every=int(cfg.training.eval_every_episodes),
         snapshot_every=int(cfg.league.snapshot_every_episodes),
-        log_dir=log_dir,
-        checkpoint_dir=ckpt_dir,
+        log_dir=run_log_dir,
+        checkpoint_dir=run_ckpt_dir,
         device=torch_device,
         map_name=map_name,
         resume_from=Path(resume) if resume else None,
