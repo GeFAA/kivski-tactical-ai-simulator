@@ -54,8 +54,17 @@ if command -v huggingface-cli >/dev/null 2>&1; then
         log "warn: huggingface-cli login failed (token will still be used via env)"
 fi
 
-# --- 4. resolve auto-resume from persistent volume --------------------------
+# --- 4. archive checkpoints if previous run crashed on incompat -------------
+CRASH_REASON_FILE="/workspace/CRASH_REASON.txt"
+if [[ -f "${CRASH_REASON_FILE}" ]] && grep -qi "incompatible_checkpoint\|CheckpointIncompatibleError" "${CRASH_REASON_FILE}"; then
+    ts="$(date -u +%Y%m%d-%H%M%S)"
+    log "previous crash was incompat — archiving ${PERSIST_CKPT_DIR} -> ${PERSIST_CKPT_DIR}_archive_${ts}"
+    mv "${PERSIST_CKPT_DIR}" "${PERSIST_CKPT_DIR}_archive_${ts}" 2>/dev/null || true
+    rm -f "${CRASH_REASON_FILE}"
+fi
 mkdir -p "${PERSIST_CKPT_DIR}"
+
+# --- 4b. resolve auto-resume from persistent volume -------------------------
 if [[ -z "${RESUME_CKPT}" ]]; then
     # Prefer best.pt, else newest main_ep_*.pt
     if [[ -f "${PERSIST_CKPT_DIR}/best.pt" ]]; then
@@ -63,6 +72,33 @@ if [[ -z "${RESUME_CKPT}" ]]; then
     else
         latest="$(ls -1t "${PERSIST_CKPT_DIR}"/main_ep_*.pt 2>/dev/null | head -1 || true)"
         if [[ -n "${latest}" ]]; then RESUME_CKPT="${latest}"; fi
+    fi
+fi
+
+# --- 4c. proactively reject incompat checkpoints (avoid crash + restart) ----
+# Compare arch fields in the .pt.json sidecar against current config; if
+# mismatch (e.g. hidden_size bumped), archive + start fresh.
+if [[ -n "${RESUME_CKPT}" ]]; then
+    sidecar="${RESUME_CKPT}.json"
+    if [[ -f "${sidecar}" ]]; then
+        if ! python - <<PYCHECK >/dev/null 2>&1
+import json, sys, yaml
+sidecar = json.load(open("${sidecar}"))
+cfg = yaml.safe_load(open("${CONFIG_FILE}"))
+ml = cfg.get("ml", {})
+keys = ("hidden_size", "gru_layers", "comm_attention_heads", "comm_embedding_dim")
+ckpt_arch = sidecar.get("env_shape", {}) | sidecar.get("model_arch", {})
+for k in keys:
+    if k in ml and k in ckpt_arch and int(ml[k]) != int(ckpt_arch[k]):
+        sys.exit(1)
+PYCHECK
+        then
+            ts="$(date -u +%Y%m%d-%H%M%S)"
+            log "checkpoint ${RESUME_CKPT} arch mismatches config — archiving + fresh start"
+            mv "${PERSIST_CKPT_DIR}" "${PERSIST_CKPT_DIR}_archive_${ts}" 2>/dev/null || true
+            mkdir -p "${PERSIST_CKPT_DIR}"
+            RESUME_CKPT=""
+        fi
     fi
 fi
 

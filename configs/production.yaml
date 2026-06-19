@@ -67,14 +67,21 @@ agent:
 
 ml:
   algo: mappo
-  hidden_size: 256
+  # v0.6: bumped capacity for better RTX 4090 utilization (Option B in
+  # the cloud-tuning playbook). CPU is the bottleneck with subproc envs,
+  # so we shift more work into each PPO update without losing fps:
+  #   hidden_size 256 -> 384   (~2x params, head_dim 96 still clean for 4 heads)
+  #   minibatch_size 2048 -> 4096   (15 batches of 4096 == 61_440 transitions)
+  #   ppo_epochs 4 -> 5   (25% more gradient passes per rollout)
+  # Peak VRAM well under 4 GB on RTX 4090; CPU sim load unchanged.
+  hidden_size: 384
   gru_layers: 1
   comm_attention_heads: 4
   comm_embedding_dim: 64
   gumbel_temperature: 1.0
   ppo_clip: 0.2
-  ppo_epochs: 4
-  minibatch_size: 2048
+  ppo_epochs: 5
+  minibatch_size: 4096
   learning_rate: 6.0e-4
   entropy_coef: 0.030
   value_coef: 0.5
