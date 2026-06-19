@@ -34,8 +34,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python -m pip install --upgrade pip setuptools wheel
 
 # ---- torch (CUDA 12.1) FIRST so the editable install picks it up -----------
+# Pinned to a known-good cu121 wheel. The editable install below could otherwise
+# resolve `torch>=2.2` against the default PyPI index and silently downgrade
+# to a CPU-only wheel, killing GPU training without any visible error.
 RUN pip install --index-url https://download.pytorch.org/whl/cu121 \
-        torch torchvision
+        torch==2.4.1 torchvision==0.19.1
 
 # ---- clone repo ------------------------------------------------------------
 ARG REPO_URL=https://github.com/GeFAA/kivski-tactical-ai-simulator.git
@@ -50,7 +53,10 @@ WORKDIR /workspace/kivski
 
 # ---- install the monorepo (single root pyproject covers sim+agents+api) ----
 # `[cloud]` extra pulls huggingface_hub for HF Hub model/metrics sync.
-RUN pip install -e ".[cloud]"
+# Fail-fast assert at the end: if torch lost its CUDA build, we exit
+# the build instead of shipping a broken image.
+RUN pip install -e ".[cloud]" \
+    && python -c "import torch; v = torch.__version__; assert '+cu' in v or torch.cuda.is_available(), f'torch lost CUDA build: {v}'; print(f'torch ok: {v}')"
 
 # ---- entrypoints -----------------------------------------------------------
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
