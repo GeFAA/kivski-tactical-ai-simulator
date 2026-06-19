@@ -74,6 +74,13 @@ ml:
   #   minibatch_size 2048 -> 4096   (15 batches of 4096 == 61_440 transitions)
   #   ppo_epochs 4 -> 5   (25% more gradient passes per rollout)
   # Peak VRAM well under 4 GB on RTX 4090; CPU sim load unchanged.
+  #
+  # v0.6.2 — break entropy-regularization deadlock:
+  # After ep_2000 the policy was frozen at entropy=6.838 (4 decimals)
+  # with value_loss ~0 and best.pt unchanged since ep_95. entropy_coef
+  # was forcing near-uniform action distribution which yielded near-zero
+  # returns, eliminating learning signal. Lower coef lets the policy
+  # commit; lr down to keep updates stable when commits land hard.
   hidden_size: 384
   gru_layers: 1
   comm_attention_heads: 4
@@ -82,8 +89,8 @@ ml:
   ppo_clip: 0.2
   ppo_epochs: 5
   minibatch_size: 4096
-  learning_rate: 6.0e-4
-  entropy_coef: 0.030
+  learning_rate: 3.0e-4
+  entropy_coef: 0.010
   value_coef: 0.5
   gae_lambda: 0.95
   gamma: 0.99
@@ -128,7 +135,10 @@ reward_shaping:
   useful_trade: 0.40
   pointless_death: -0.50
   map_control_per_tile: 0.0020
-  defenders_elim_bonus: 3.0
+  # v0.6.2: bumped to break entropy deadlock — stronger terminal signal
+  # so when the policy DOES commit to killing/planting, the reward jump
+  # is large enough to dominate the entropy regularizer.
+  defenders_elim_bonus: 8.0
   plant_progress_per_second: 0.5
 
 reward_curriculum:
