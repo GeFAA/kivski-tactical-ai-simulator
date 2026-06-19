@@ -1,0 +1,33 @@
+{
+  "name": "kivski-trainer",
+  "imageName": "YOURDOCKERUSER/kivski:latest",
+  "containerDiskInGb": 30,
+  "volumeInGb": 50,
+  "volumeMountPath": "/workspace/persistent",
+  "gpuCount": 1,
+  "gpuTypeId": "NVIDIA RTX 4090",
+  "ports": "8000/http",
+  "dockerArgs": "/usr/local/bin/24-7-supervisor.sh",
+  "env": [
+    {
+      "key": "HF_TOKEN",
+      "value": "REPLACE_WITH_HUGGINGFACE_WRITE_TOKEN"
+    },
+    {
+      "key": "KIVSKI_HF_REPO",
+      "value": "your-hf-username/kivski-checkpoints"
+    },
+    {
+      "key": "REPO_URL",
+      "value": "https://github.com/GeFAA/kivski-tactical-ai-simulator.git"
+    },
+    {
+      "key": "REPO_REF",
+      "value": "main"
+    },
+    {
+      "key": "KIVSKI_CONFIG",
+      "value": "configs/turbo.yaml"
+    }
+  ]
+}

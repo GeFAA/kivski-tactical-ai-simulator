@@ -46,6 +46,11 @@ dependencies = [
 
 [project.optional-dependencies]
 wandb = ["wandb>=0.16"]
+# Cloud sync: push checkpoints + metrics to a private Hugging Face Hub repo
+# from the trainer's background thread. Required by
+# ``kivski_agents.cloud_sync.HFHubSyncer``. Off by default to avoid pulling
+# huggingface_hub + its deps into a vanilla local install.
+cloud = ["huggingface_hub>=0.20.0"]
 # CUDA build of PyTorch is NOT a pip-installable extra (PyTorch publishes
 # platform-specific wheels via its own index). Install with:
 #   pip install --index-url https://download.pytorch.org/whl/cu126 \
@@ -65,7 +70,7 @@ dev = [
     "mypy>=1.9",
     "httpx>=0.27",
 ]
-all = ["kivski[wandb,dev]"]
+all = ["kivski[wandb,cloud,dev]"]
 
 [project.scripts]
 kivski-train = "scripts.train:app"

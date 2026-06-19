@@ -27,6 +27,7 @@ from kivski_sim.utils import now_unix
 from kivski_api import __version__
 from kivski_api.metrics_broadcaster import MetricsBroadcaster
 from kivski_api.routes import checkpoints as checkpoints_routes
+from kivski_api.routes import cloud as cloud_routes
 from kivski_api.routes import health as health_routes
 from kivski_api.routes import maps as maps_routes
 from kivski_api.routes import match as match_routes
@@ -161,6 +162,7 @@ def create_app(cfg: KivskiConfig | None = None) -> FastAPI:
     app.include_router(training_routes.router)
     app.include_router(match_routes.router)
     app.include_router(system_routes.router)
+    app.include_router(cloud_routes.router)
     app.include_router(ws_routes.router)
 
     return app

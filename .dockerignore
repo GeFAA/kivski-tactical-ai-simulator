@@ -1,0 +1,22 @@
+# Source is git-cloned inside the image; only the docker/ scripts get COPYed.
+.git/
+.github/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+models/
+data/
+apps/web/dist/
+apps/web/node_modules/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+kivski.egg-info/
+*.egg-info/
+docs/
+tests/
+.env
+.env.*
+!.env.example

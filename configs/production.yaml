@@ -1,14 +1,16 @@
-# Kivski Tactical AI Simulator -- "turbo" preset.
+# Production preset -- used for 24/7 cloud training. WR-fixes baked in,
+# frequent checkpoints for HF Hub sync. Auto-detects GPU. Use via:
+#   kivski-train --config configs/production.yaml
 #
-# Max-throughput 5v5 training: shorter matches (max_rounds=12), higher
-# frame_skip (6), more parallel envs (48), 2x reward shaping magnitudes
-# and slightly more aggressive exploration + learning rate.
-#
-# Trains directly in 5v5 (same distribution as the viewer match) so the
-# rendered game stays representative of the policy distribution.
-#
-# Pick via the New-Match training-config dropdown ("turbo") or:
-#   kivski-train --config configs/turbo.yaml
+# Derived from configs/turbo.yaml. Key deltas vs turbo:
+#   * league.exploit_fraction = 0.0  (no exploiters until WR > 0)
+#   * league.random_fraction = 0.50  (mostly random opponents early)
+#   * league.scripted_fraction = 0.30
+#   * reward_shaping.defenders_elim_bonus = 3.0
+#   * reward_shaping.plant_progress_per_second = 0.5
+#   * training.num_envs = 48 (full cloud)
+#   * training.total_episodes = 1_000_000 (run until manually stopped)
+#   * training.checkpoint_every_episodes = 100 (more frequent HF Hub sync)
 
 seed: 20260524
 
@@ -26,8 +28,6 @@ simulation:
   tick_rate_hz: 10
   max_ticks_per_round: 900
   starting_money: 800
-  # Turbo: policy acts every 6 ticks instead of 4 -> 50% fewer policy
-  # evals per game tick, ~1.5x faster wallclock for the same episodes.
   frame_skip: 6
 
 economy:
@@ -85,11 +85,9 @@ ml:
 training:
   num_envs: 48
   rollout_steps: 256
-  total_episodes: 50000
-  checkpoint_every_episodes: 250
+  total_episodes: 1000000
+  checkpoint_every_episodes: 100
   eval_every_episodes: 50
-  # *** Curriculum DISABLED: train directly in 5v5 so the viewer match
-  # (always 5v5) sees the same distribution.
   curriculum:
     enabled: false
     stages: []
@@ -101,8 +99,6 @@ league:
   random_fraction: 0.50
   scripted_fraction: 0.30
 
-# Turbo reward shaping: 2x magnitude across the board, faster decay
-# (12k vs 15k episodes) since shorter matches give denser sparse rewards.
 reward_shaping:
   enabled: true
   decay_after_episodes: 12000
@@ -118,19 +114,6 @@ reward_shaping:
   defenders_elim_bonus: 3.0
   plant_progress_per_second: 0.5
 
-# v0.5: self-play disabled (exploit_fraction=0), defenders_elim_bonus +
-# plant_progress reward unlock attacker win paths. Yellow can now win via
-# (1) eliminating defenders directly (terminal +3.0) or (2) progressing the
-# plant (+0.5/s while planting).
-#
-# v0.4.2: reward_curriculum ENABLED. The trainer hard-disables side-switching
-# (YELLOW is always attacker), and untrained policy never plants → every
-# match TIMEOUTs → defender (random/scripted/main) wins automatically →
-# WR_yellow == 0 by mathematical guarantee. To break this, give YELLOW a
-# learnable path that doesn't require plant: stage 1 "killshoot" rewards
-# only kill+survive+damage, so attacker can win by ELIMINATING defenders
-# (RoundOutcome.DEFENDERS_ELIM) instead of needing a successful plant.
-# Once shooting is learned (stage 2), bomb mechanics get added.
 reward_curriculum:
   enabled: true
   stages:

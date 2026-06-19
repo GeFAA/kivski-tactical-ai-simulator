@@ -15,6 +15,7 @@ import {
 import { formatCompactNumber, formatDuration } from "@/lib/format";
 import { useStore } from "@/lib/store";
 import type { SettingsTab, UiMode } from "@/lib/store";
+import CloudSyncPanel from "@/components/CloudSyncPanel";
 import MatchSetupModal from "@/components/MatchSetupModal";
 
 /**
@@ -400,6 +401,7 @@ const TrainingTab = () => {
   const [resumeTarget, setResumeTarget] = useState<ResumeTargetInfo | null>(
     null,
   );
+  const [showCloudSync, setShowCloudSync] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -764,6 +766,19 @@ const TrainingTab = () => {
             Run {episodeCount} eps
           </button>
         </div>
+      </section>
+
+      <section>
+        <button
+          type="button"
+          onClick={() => setShowCloudSync((v) => !v)}
+          aria-expanded={showCloudSync}
+          className="mb-2 flex w-full items-center justify-between text-[10px] uppercase tracking-widest text-kivski-muted hover:text-kivski-defender"
+        >
+          <span>Cloud Sync</span>
+          <span aria-hidden>{showCloudSync ? "▾" : "▸"}</span>
+        </button>
+        {showCloudSync && <CloudSyncPanel />}
       </section>
 
       <section>

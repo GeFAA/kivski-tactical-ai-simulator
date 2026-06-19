@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import shutil
 import time
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ import torch
 from kivski_sim.config import KivskiConfig
 
 from kivski_agents.buffer import RolloutBuffer
+from kivski_agents.cloud_sync import maybe_build_syncer_from_env
 from kivski_agents.eval.runner import EvalResult, EvalRunner
 from kivski_agents.eval.scenarios import ALL_SCENARIOS, ScenarioSpec
 from kivski_agents.factory import build_model, build_trainer, default_action_spec, infer_joint_obs_dim
@@ -65,6 +67,8 @@ from kivski_agents.training.vec_env import VecEnvWrapper
 
 # Type alias covering every vec-env backend we ship.
 AnyVecEnv = VecEnvWrapper | ThreadedVecEnv | SubprocVecEnv
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["TrainerConfig", "Trainer"]
 
@@ -229,6 +233,13 @@ class Trainer:
         self._latest_per_episode_ckpt: Path | None = None
         self._load_best_score_from_disk()
 
+        # 9) Optional Hugging Face Hub cloud sync. Best-effort: returns ``None``
+        # when HF_TOKEN / KIVSKI_HF_REPO env vars aren't set, so local runs are
+        # untouched. All uploads happen on a background thread.
+        self.cloud_sync = maybe_build_syncer_from_env()
+        if self.cloud_sync:
+            logger.info("Cloud sync to HF Hub enabled: %s", self.cloud_sync.repo_id)
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -244,6 +255,27 @@ class Trainer:
         # match that spans multiple rollouts keeps a coherent GRU history.
         carry_hidden: torch.Tensor | None = None
 
+        try:
+            self._train_loop(
+                total_target, last_eval_at, last_ckpt_at, last_snapshot_at, last_print_at, carry_hidden
+            )
+        finally:
+            # Final flush of telemetry + cloud sync.
+            with contextlib.suppress(Exception):
+                self.telemetry.flush()
+            if self.cloud_sync is not None:
+                with contextlib.suppress(Exception):
+                    self.cloud_sync.shutdown()
+
+    def _train_loop(
+        self,
+        total_target: int,
+        last_eval_at: int,
+        last_ckpt_at: int,
+        last_snapshot_at: int,
+        last_print_at: int,
+        carry_hidden: torch.Tensor | None,
+    ) -> None:
         while self.episode_count < total_target:
             # ---- a) Sample opponent + (re-)build collector --------------
             opponent = self.league.sample_opponent(self._rng)
@@ -340,10 +372,6 @@ class Trainer:
             if new_episodes == 0:
                 self.episode_count += 0  # explicit no-op for clarity
 
-        # Final flush.
-        with contextlib.suppress(Exception):
-            self.telemetry.flush()
-
     # ------------------------------------------------------------------
     # Evaluation hook
     # ------------------------------------------------------------------
@@ -415,6 +443,12 @@ class Trainer:
         self._latest_per_episode_ckpt: Path = saved
         with contextlib.suppress(Exception):
             self._prune_old_checkpoints()
+        # Best-effort push to HF Hub. mappo.save writes a `<stem>.pt.json`
+        # sidecar alongside the .pt; push it too when present.
+        if self.cloud_sync is not None:
+            sidecar = saved.with_suffix(saved.suffix + ".json")
+            with contextlib.suppress(Exception):
+                self.cloud_sync.push_checkpoint(saved, sidecar if sidecar.is_file() else None)
         return saved
 
     def load_checkpoint(self, path: Path) -> dict[str, Any]:
@@ -627,6 +661,11 @@ class Trainer:
                 step=self.update_step,
             )
 
+        # Best-effort push best.pt + best.json to HF Hub.
+        if self.cloud_sync is not None:
+            with contextlib.suppress(Exception):
+                self.cloud_sync.push_checkpoint(best_pt, best_sidecar if best_sidecar.is_file() else None)
+
     def _prune_old_checkpoints(self) -> None:
         """Keep only the ``retention_count`` newest ``main_ep_*.pt`` files.
 
@@ -766,9 +805,7 @@ class Trainer:
                     "live/kl": float(loss.kl),
                     "live/env_steps": float(self.env_steps),
                     "live/num_envs": float(self.tcfg.num_envs),
-                    "live/frame_skip": float(
-                        getattr(self.active_cfg.simulation, "frame_skip", 1) or 1
-                    ),
+                    "live/frame_skip": float(getattr(self.active_cfg.simulation, "frame_skip", 1) or 1),
                     "live/tick_dt": float(
                         1.0
                         / max(
@@ -786,9 +823,7 @@ class Trainer:
                 {
                     "train/env_steps": float(self.env_steps),
                     "train/num_envs": float(self.tcfg.num_envs),
-                    "train/frame_skip": float(
-                        getattr(self.active_cfg.simulation, "frame_skip", 1) or 1
-                    ),
+                    "train/frame_skip": float(getattr(self.active_cfg.simulation, "frame_skip", 1) or 1),
                     "train/tick_dt": float(
                         1.0
                         / max(
@@ -801,6 +836,16 @@ class Trainer:
             )
         except Exception:
             pass
+
+        # Best-effort push of metrics CSV to HF Hub every 25 updates. We use
+        # the telemetry sink's ``metrics_path`` attribute when present; sinks
+        # without a CSV backing file (NoOp, raw JSONL) are skipped silently.
+        if self.cloud_sync is not None and (self.update_step % 25 == 0):
+            metrics_path = getattr(self.telemetry, "metrics_path", None)
+            if metrics_path is not None:
+                run_name = self.tcfg.run_name or "unnamed"
+                with contextlib.suppress(Exception):
+                    self.cloud_sync.push_metrics(Path(metrics_path), run_name)
 
     def _print_progress(
         self,

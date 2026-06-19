@@ -46,6 +46,7 @@ from kivski_sim.types import (
     MatchOutcome,
     MicroAction,
     Phase,
+    RoundOutcome,
     Side,
     Team,
     WeaponClass,
@@ -1095,6 +1096,15 @@ class KivskiParallelEnv(ParallelEnv):
             ):
                 shaping += float(rs.bomb_pickup)
 
+            # Plant progress: reward the bomb carrier per-second while actively planting.
+            if (
+                a.has_bomb
+                and a.side == Side.ATTACKER
+                and self._engine.state.bomb.phase == BombPhase.PLANTING
+                and self._feature_enabled("bomb_plant")
+            ):
+                shaping += float(rs.plant_progress_per_second) * dt
+
             # Death bookkeeping.
             if bool(pre["alive"]) and not a.alive:
                 team_deaths_this_tick[a.team].append(aid)
@@ -1162,6 +1172,19 @@ class KivskiParallelEnv(ParallelEnv):
             for a in self._engine.state.agents:
                 if a.side == Side.DEFENDER and a.alive:
                     rewards[agent_name(int(a.agent_id))] += float(rs.successful_defuse) * factor * 0.5
+
+        # Terminal DEFENDERS_ELIM bonus: fires once on the tick a round ends with
+        # attackers having wiped out the defenders. Guarded by ``round_changed`` so
+        # this only triggers on the transition tick (same pattern as round-id
+        # bookkeeping above).
+        if (
+            round_changed
+            and self._engine.state.last_round_outcome == RoundOutcome.DEFENDERS_ELIM
+            and self._feature_enabled("kill")
+        ):
+            for a in self._engine.state.agents:
+                if a.side == Side.ATTACKER:
+                    rewards[agent_name(int(a.agent_id))] += float(rs.defenders_elim_bonus) * factor
 
         return rewards
 

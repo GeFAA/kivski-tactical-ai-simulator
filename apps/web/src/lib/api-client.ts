@@ -488,6 +488,80 @@ export async function getTrainingStatus(): Promise<TrainingStatus | null> {
   }
 }
 
+// ---------- Cloud sync ----------
+
+export interface CloudCheckpointInfo {
+  name: string;
+  size_bytes: number;
+  uploaded_at: number | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface CloudMetricsSummary {
+  episode: number;
+  total_env_steps: number;
+  score: number;
+}
+
+export interface CloudStatusInfo {
+  configured: boolean;
+  repo_id: string | null;
+  last_pull: number | null;
+  latest_checkpoint: CloudCheckpointInfo | null;
+  metrics_summary: CloudMetricsSummary | null;
+  /** Backend-set when configured but the HF API call itself failed. */
+  error?: string;
+}
+
+export interface CloudPullResult {
+  name: string;
+  path: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface CloudPullLoadResult {
+  name: string;
+  loaded: boolean;
+  path?: string;
+}
+
+export async function getCloudStatus(): Promise<CloudStatusInfo> {
+  try {
+    const res = await fetch(`${API_BASE}/cloud/status`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      return {
+        configured: false,
+        repo_id: null,
+        last_pull: null,
+        latest_checkpoint: null,
+        metrics_summary: null,
+      };
+    }
+    return (await res.json()) as CloudStatusInfo;
+  } catch {
+    return {
+      configured: false,
+      repo_id: null,
+      last_pull: null,
+      latest_checkpoint: null,
+      metrics_summary: null,
+    };
+  }
+}
+
+export async function pullCloudCheckpoint(): Promise<CloudPullResult> {
+  const res = await fetch(`${API_BASE}/cloud/pull`, { method: "POST" });
+  return jsonOrThrow<CloudPullResult>(res);
+}
+
+export async function pullAndLoadCloudCheckpoint(): Promise<CloudPullLoadResult> {
+  const res = await fetch(`${API_BASE}/cloud/pull-and-load`, { method: "POST" });
+  return jsonOrThrow<CloudPullLoadResult>(res);
+}
+
 export type Command =
   | { type: "pause" }
   | { type: "resume" }

@@ -147,6 +147,12 @@ class RewardShapingConfig(_Frozen):
     useful_trade: float = 0.15
     pointless_death: float = -0.20
     map_control_per_tile: float = 0.0008
+    defenders_elim_bonus: float = (
+        0.0  # one-shot terminal bonus per attacker when DEFENDERS_ELIM outcome fires
+    )
+    plant_progress_per_second: float = (
+        0.0  # per-second reward for carrier while actively planting (scaled by tick_dt)
+    )
 
 
 class RewardCurriculumStage(_Frozen):
