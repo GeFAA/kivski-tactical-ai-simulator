@@ -1,5 +1,17 @@
 # Kivski Tactical AI Simulator -- "turbo" preset.
 #
+# ⚠️  DEPRECATED — kept for backward compatibility only.
+#
+# As of v0.6, configs/production.yaml is the canonical 24/7 preset
+# (single config used by RunPod entrypoint + local cloud runs). It has:
+#   - Larger network (hidden_size 384 vs 256 here)
+#   - Better PPO settings (minibatch 4096, ppo_epochs 5)
+#   - League fractions summing to 1.0 (no silent self-play)
+#   - Capped dense plant/defuse rewards
+#
+# Use turbo.yaml ONLY if you explicitly want the v0.5 settings.
+# For everything else: kivski-train train -c configs/production.yaml
+#
 # Max-throughput 5v5 training: shorter matches (max_rounds=12), higher
 # frame_skip (6), more parallel envs (48), 2x reward shaping magnitudes
 # and slightly more aggressive exploration + learning rate.
