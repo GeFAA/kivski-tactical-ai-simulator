@@ -668,14 +668,24 @@ class SessionRegistry:
         # no checkpoint exists). Without this the live viewer would always
         # show two RandomPolicy adapters even after days of training -- the
         # exact bug v0.3.0 set out to fix.
+        #
+        # v0.6: if the user explicitly Loaded a checkpoint (via the Cloud
+        # Sync "Pull & Load" button or the regular checkpoint loader), prefer
+        # that exact name over auto-latest so the next match uses what they
+        # picked instead of whatever happens to have the newest mtime.
         auto_default = policy_yellow is None and policy_blue is None
         if auto_default:
-            ckpt = latest_checkpoint_path()
-            if ckpt is not None:
-                default_spec: str | None = "latest"
+            explicit = REGISTRY.loaded_checkpoint
+            if explicit:
+                default_spec: str | None = explicit
+                _LOG.info("create_match: using explicitly loaded checkpoint %r", explicit)
             else:
-                default_spec = "random"
-                _LOG.warning("create_match: no checkpoint available, defaulting both sides to random")
+                ckpt = latest_checkpoint_path()
+                if ckpt is not None:
+                    default_spec = "latest"
+                else:
+                    default_spec = "random"
+                    _LOG.warning("create_match: no checkpoint available, defaulting both sides to random")
             yellow_spec = default_spec
             blue_spec = default_spec
         else:

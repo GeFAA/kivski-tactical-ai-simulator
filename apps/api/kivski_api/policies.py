@@ -96,11 +96,18 @@ def _league_state_paths() -> list[Path]:
 
 
 def latest_checkpoint_path() -> Path | None:
-    """Return the most-recently-modified checkpoint file, or ``None``."""
+    """Return the most-recently-modified checkpoint file, or ``None``.
+
+    Searches the top-level of ``models/checkpoints/`` plus the ``cloud/``
+    subdirectory used by the HF Hub sync (see ``apps/api/kivski_api/routes/cloud.py``).
+    Per-run subdirs are intentionally excluded to keep this fast and avoid
+    accidentally picking a stale ep_5 from an old run.
+    """
     root = checkpoints_dir()
     candidates: list[Path] = []
     for ext in _VALID_CKPT_EXTS:
         candidates.extend(root.glob(f"*{ext}"))
+        candidates.extend((root / "cloud").glob(f"*{ext}"))
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -453,12 +460,14 @@ def load_policy(name_or_path: str | None) -> PolicyAdapter:
         return load_latest_checkpoint_policy()
     if lowered == "best":
         return load_best_checkpoint_policy()
-    # Try as a name under models/checkpoints first.
+    # Try as a name under models/checkpoints first (top-level and cloud/
+    # subdir to support cloud-pulled checkpoints).
     root = checkpoints_dir()
-    for ext in _VALID_CKPT_EXTS:
-        candidate = root / f"{name_or_path}{ext}"
-        if candidate.is_file():
-            return CheckpointPolicy(candidate)
+    for parent in (root, root / "cloud"):
+        for ext in _VALID_CKPT_EXTS:
+            candidate = parent / f"{name_or_path}{ext}"
+            if candidate.is_file():
+                return CheckpointPolicy(candidate)
     # Last resort: treat as a literal path.
     return CheckpointPolicy(Path(name_or_path))
 
