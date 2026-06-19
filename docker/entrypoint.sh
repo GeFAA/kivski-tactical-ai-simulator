@@ -55,7 +55,7 @@ if command -v huggingface-cli >/dev/null 2>&1; then
 fi
 
 # --- 4. archive checkpoints if previous run crashed on incompat -------------
-CRASH_REASON_FILE="/workspace/CRASH_REASON.txt"
+CRASH_REASON_FILE="${PERSIST_DIR:-/workspace/persistent}/CRASH_REASON.txt"
 if [[ -f "${CRASH_REASON_FILE}" ]] && grep -qi "incompatible_checkpoint\|CheckpointIncompatibleError" "${CRASH_REASON_FILE}"; then
     ts="$(date -u +%Y%m%d-%H%M%S)"
     log "previous crash was incompat — archiving ${PERSIST_CKPT_DIR} -> ${PERSIST_CKPT_DIR}_archive_${ts}"

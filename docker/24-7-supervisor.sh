@@ -3,8 +3,12 @@
 # Bails out if 3 restarts happen within 600s (mirrors the local watchdog).
 set -uo pipefail
 
-HISTORY_FILE="/workspace/restart-history/history"
-CRASH_REASON_FILE="/workspace/CRASH_REASON.txt"
+# v0.6.1: history + crash reason live on the persistent volume so pod
+# restart/preemption doesn't reset the restart-storm counter and lose
+# the diagnostic on the next boot.
+PERSIST_DIR="${PERSIST_DIR:-/workspace/persistent}"
+HISTORY_FILE="${PERSIST_DIR}/restart-history/history"
+CRASH_REASON_FILE="${PERSIST_DIR}/CRASH_REASON.txt"
 WINDOW_SECONDS=600
 MAX_RESTARTS=3
 BACKOFF_SECONDS=30
