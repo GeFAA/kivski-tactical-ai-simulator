@@ -89,9 +89,19 @@ ml:
   ppo_clip: 0.2
   ppo_epochs: 5
   minibatch_size: 4096
-  learning_rate: 3.0e-4
-  entropy_coef: 0.010
-  value_coef: 0.5
+  # v0.7.1: BC-resume showed entropy drifting back UP from 5.78 to 7.5+
+  # over ~1800 episodes. Root cause: value_head is random from BC (BC
+  # only trains the policy, not the critic), so advantages are noise,
+  # so policy gradient is noise, so entropy regularizer wins and
+  # commitment evaporates. Three coordinated changes:
+  # - entropy_coef 0.010 -> 0.001 : barely any pull toward max entropy
+  # - value_coef 0.5 -> 2.0       : value head learns 4x faster from
+  #                                 the limited reward signal
+  # - learning_rate 3e-4 -> 1e-4  : kills policy_loss spikes (saw +83
+  #                                 and +92 during the drift run)
+  learning_rate: 1.0e-4
+  entropy_coef: 0.001
+  value_coef: 2.0
   gae_lambda: 0.95
   gamma: 0.99
   max_grad_norm: 0.5
