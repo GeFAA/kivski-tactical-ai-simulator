@@ -64,14 +64,37 @@ if [[ -f "${CRASH_REASON_FILE}" ]] && grep -qi "incompatible_checkpoint\|Checkpo
 fi
 mkdir -p "${PERSIST_CKPT_DIR}"
 
+# --- 4a. BC bootstrap pull (first boot only) --------------------------------
+# When KIVSKI_BC_HF_FILE is set (e.g. "bc/bc_pretrained.pt"), download that
+# file from HF Hub to /workspace/persistent/bc_pretrained.pt on first boot,
+# then use it as the resume target so the trainer starts from a non-random
+# policy. Subsequent restarts reuse the local copy or whatever the trainer
+# saved on top of it -- the explicit KIVSKI_RESUME_CKPT below still wins.
+KIVSKI_BC_HF_FILE="${KIVSKI_BC_HF_FILE:-}"
+BC_LOCAL_PATH="${PERSIST_DIR:-/workspace/persistent}/bc_pretrained.pt"
+if [[ -n "${KIVSKI_BC_HF_FILE}" && ! -f "${BC_LOCAL_PATH}" ]]; then
+    log "BC bootstrap: pulling ${KIVSKI_BC_HF_FILE} from HF Hub -> ${BC_LOCAL_PATH}"
+    if python -m scripts.bootstrap_bc "${KIVSKI_BC_HF_FILE}" "${BC_LOCAL_PATH}"; then
+        log "BC bootstrap: download OK"
+    else
+        log "BC bootstrap: download FAILED (continuing without)"
+    fi
+fi
+
 # --- 4b. resolve auto-resume from persistent volume -------------------------
 if [[ -z "${RESUME_CKPT}" ]]; then
-    # Prefer best.pt, else newest main_ep_*.pt
+    # Priority: best.pt > newest main_ep_*.pt > BC bootstrap (only if
+    # no real training run has produced a checkpoint yet)
     if [[ -f "${PERSIST_CKPT_DIR}/best.pt" ]]; then
         RESUME_CKPT="${PERSIST_CKPT_DIR}/best.pt"
     else
         latest="$(ls -1t "${PERSIST_CKPT_DIR}"/main_ep_*.pt 2>/dev/null | head -1 || true)"
-        if [[ -n "${latest}" ]]; then RESUME_CKPT="${latest}"; fi
+        if [[ -n "${latest}" ]]; then
+            RESUME_CKPT="${latest}"
+        elif [[ -f "${BC_LOCAL_PATH}" ]]; then
+            RESUME_CKPT="${BC_LOCAL_PATH}"
+            log "auto-resume target = BC bootstrap (no prior training ckpts found)"
+        fi
     fi
 fi
 
