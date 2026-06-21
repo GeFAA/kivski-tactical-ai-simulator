@@ -85,3 +85,6 @@ runs/
 
 # Archived checkpoints (multi-GB, never push)
 models/_archive_*/
+
+# Imitation-learning demo dumps (up to several hundred MB)
+/data/
