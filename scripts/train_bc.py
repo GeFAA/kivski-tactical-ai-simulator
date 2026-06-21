@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 import typer
 from torch.utils.data import DataLoader
 
@@ -104,24 +105,49 @@ def train(
             B = obs_b.shape[0]
             hidden_b = model.initial_hidden_state(B, device=torch_device)
 
-            # Note: rename to eval_out so we don't shadow the --out CLI option.
-            eval_out = model.evaluate(
-                obs=obs_b,
-                hidden_state=hidden_b,
-                received_comm=comm_b,
-                prev_actions={"move": move_b, "discrete": disc_b},
-                joint_obs=joint_b,
-            )
-            log_probs = eval_out["log_probs"]  # [B] joint log-prob (continuous + discrete)
-            entropy = eval_out["entropy"]  # [B]
-            # BC loss = negative log-likelihood of demo actions.
-            # NOTE: log_probs sums continuous (log-density, unbounded) + discrete
-            # (log-prob, <=0). A Gaussian can collapse to a delta on low-variance
-            # demos (move=[0,0] during buy phase) -> density blows up -> log_prob
-            # > 0 -> NLL < 0. We add a tiny weight on entropy to discourage
-            # pathological collapse: keep enough spread that PPO fine-tuning can
-            # still explore.
-            loss = -log_probs.mean() - 0.05 * entropy.mean()
+            # ---- BC forward via trunk + manual heads (teacher forcing) -------
+            # We don't use model.evaluate() because its Gaussian NLL term
+            # collapses (sigma -> floor) when ~half the demos are move=[0,0]
+            # (buy phase). Collapse pathology: log_density blows up, NLL goes
+            # to -inf, policy memorizes "always be still" and never explores.
+            #
+            # Instead: MSE on the move mean (the policy gradient that drives
+            # log_std stays untouched, so log_std stays near its init and
+            # PPO can adapt it later) + per-head CE on discrete with teacher
+            # forcing on previous-action embeddings.
+            actor_hidden, _ = model._forward_core(obs_b, hidden_b, comm_b)
+            move_mean, _move_std = model.actor_heads._move_params(actor_hidden)
+            move_loss = F.mse_loss(move_mean, move_b)
+
+            disc_loss = torch.zeros((), device=torch_device)
+            disc_ce_per_head: list[float] = []
+            prev_embeds: list[torch.Tensor] = []
+            for i, (head, emb) in enumerate(
+                zip(model.actor_heads.heads, model.actor_heads.embeddings, strict=False)
+            ):
+                head_in = torch.cat([actor_hidden, move_b, *prev_embeds], dim=-1)
+                logits = head(head_in)
+                ce_i = F.cross_entropy(logits, disc_b[:, i])
+                disc_loss = disc_loss + ce_i
+                disc_ce_per_head.append(float(ce_i.detach().cpu().item()))
+                prev_embeds.append(emb(disc_b[:, i]))
+
+            loss = move_loss + disc_loss
+
+            # For monitoring only -- log entropy via the standard evaluate
+            # path every Nth step (cheap if Nth, expensive every step).
+            with torch.no_grad():
+                if n_seen % (B * 50) == 0:
+                    _eval = model.evaluate(
+                        obs=obs_b,
+                        hidden_state=hidden_b,
+                        received_comm=comm_b,
+                        prev_actions={"move": move_b, "discrete": disc_b},
+                        joint_obs=joint_b,
+                    )
+                    entropy = _eval["entropy"]
+                else:
+                    entropy = torch.zeros(B, device=torch_device)
 
             optim.zero_grad(set_to_none=True)
             loss.backward()
@@ -129,14 +155,17 @@ def train(
             optim.step()
 
             n_seen += B
-            nll_sum += float(-log_probs.detach().cpu().mean().item()) * B
+            nll_sum += float(loss.detach().cpu().item()) * B
             entropy_sum += float(entropy.detach().cpu().mean().item()) * B
 
         dt = time.perf_counter() - t0
-        avg_nll = nll_sum / max(n_seen, 1)
+        avg_loss = nll_sum / max(n_seen, 1)
         avg_ent = entropy_sum / max(n_seen, 1)
+        # Last-batch per-head CE for visibility
+        ce_str = "/".join(f"{c:.3f}" for c in disc_ce_per_head) if disc_ce_per_head else "-"
         typer.echo(
-            f"[bc] epoch {epoch + 1:3d}/{epochs} nll={avg_nll:.4f} "
+            f"[bc] epoch {epoch + 1:3d}/{epochs} loss={avg_loss:.4f} "
+            f"move_mse={float(move_loss.item()):.4f} ce={ce_str} "
             f"avg_entropy={avg_ent:.3f} ({n_seen:_} steps in {dt:.1f}s)"
         )
 
@@ -157,7 +186,8 @@ def train(
             "demo_steps": len(dataset),
             "bc_epochs": epochs,
             "bc_learning_rate": learning_rate,
-            "bc_final_nll": avg_nll,
+            "bc_final_loss": avg_loss,
+            "bc_loss_type": "mse_move + ce_discrete (teacher forced)",
         },
     )
     bundle.save(out_path)

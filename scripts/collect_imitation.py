@@ -56,10 +56,21 @@ def collect(
     out: str = typer.Option("data/imitation_demos.pt", "--out"),
     seed: int = typer.Option(42, "--seed"),
     scenario: str = typer.Option("full_pistol", "--scenario"),
+    max_rounds: int = typer.Option(4, "--max-rounds", help="Shorter rounds = faster collect, still teaches navigate+plant."),
+    round_time_seconds: int = typer.Option(45, "--round-time", help="Shorter rounds time limit."),
 ) -> None:
     """Collect scripted_rush demos as a torch tensor dict."""
     sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
     cfg = load_config(config)
+    # Override simulation params to keep collection fast: 4 short rounds per
+    # match (vs production's 12 x 90s) still includes buy-phase + rush +
+    # plant attempts but finishes in ~30s wall-clock per match instead of
+    # ~10 minutes. Same skill demonstration, 20x faster.
+    raw = cfg.model_dump()
+    raw.setdefault("simulation", {})["max_rounds"] = int(max_rounds)
+    raw["simulation"]["round_time_seconds"] = int(round_time_seconds)
+    from kivski_sim.config import KivskiConfig as _Cfg
+    cfg = _Cfg.model_validate(raw)
     team_size = int(cfg.simulation.team_size)
     comm_value_dim = _comm_value_dim(cfg)
     hidden_size = int(cfg.ml.hidden_size)
